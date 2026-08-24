@@ -16,8 +16,7 @@ implementation.
 - Thesis writing is maintained separately in Overleaf and intentionally excluded
   from this source-code repository.
 - Literature screening and supervisor questions are in `docs/`.
-- The source repository is intended to be public; thesis writing remains private
-  in Overleaf.
+- The source repository is public; thesis writing remains private in Overleaf.
 
 ## Development
 
