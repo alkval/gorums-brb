@@ -16,7 +16,8 @@ implementation.
 - Thesis writing is maintained separately in Overleaf and intentionally excluded
   from this source-code repository.
 - Literature screening and supervisor questions are in `docs/`.
-- No public GitHub repository or release exists yet.
+- The source repository is intended to be public; thesis writing remains private
+  in Overleaf.
 
 ## Development
 
@@ -41,5 +42,6 @@ See [docs/setup.md](docs/setup.md) for environment details.
 
 ## License
 
-The license for original project code is not yet selected. Dependencies remain
-under their respective upstream licenses; see `THIRD_PARTY_NOTICES.md`.
+Original project code is licensed under the [MIT License](LICENSE).
+Dependencies remain under their respective upstream licenses; see
+`THIRD_PARTY_NOTICES.md`.
