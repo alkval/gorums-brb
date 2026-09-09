@@ -8,6 +8,10 @@
 /go.work
 /go.work.sum
 
+# Local coding-agent instructions
+/AGENTS.md
+/docs/
+
 # Experiment output
 /results/raw/
 /experiments/out/
