@@ -1,0 +1,40 @@
+edition = "2024";
+
+package brb.v1;
+option go_package = "github.com/alkval/gorums-brb/proto/brb/v1;brbv1";
+option features.field_presence = IMPLICIT;
+option features.enforce_naming_style = STYLE_LEGACY;
+
+import "google/protobuf/empty.proto";
+import "gorums.proto";
+
+// Broadcast transports the three phases of Bracha-style reliable broadcast.
+// Each phase is a one-way multicast, including to the sending process itself.
+service Broadcast {
+  rpc Send(PhaseMessage) returns (google.protobuf.Empty) {
+    option (gorums.multicast) = true;
+  }
+
+  rpc Echo(PhaseMessage) returns (google.protobuf.Empty) {
+    option (gorums.multicast) = true;
+  }
+
+  rpc Ready(PhaseMessage) returns (google.protobuf.Empty) {
+    option (gorums.multicast) = true;
+  }
+}
+
+// BroadcastID scopes protocol state to one value proposed by one origin.
+message BroadcastID {
+  uint32 origin = 1;
+  uint64 sequence = 2;
+}
+
+// PhaseMessage carries the value associated with a broadcast instance.
+message PhaseMessage {
+  BroadcastID id = 1;
+  bytes value = 2;
+  // sender is trusted by the prototype. A future authenticated transport
+  // must bind this claim to the actual peer identity.
+  uint32 sender = 3;
+}
