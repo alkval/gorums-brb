@@ -22,7 +22,6 @@ confirmation.
 - The current Gorums revision is pinned as a Go dependency.
 - Thesis writing is maintained separately in Overleaf and intentionally excluded
   from this source-code repository.
-- Literature screening and supervisor questions are in `docs/`.
 - The source repository is public; thesis writing remains private in Overleaf.
 
 ## Development
@@ -37,8 +36,6 @@ make test
 make vet
 ```
 
-See [docs/setup.md](docs/setup.md) for environment details.
-
 ## Repository map
 
 - `proto/brb/v1/`: Protocol Buffer and Gorums service definitions.
@@ -46,7 +43,6 @@ See [docs/setup.md](docs/setup.md) for environment details.
 - `cmd/`: future node and control/demo commands.
 - `experiments/`: experiment configuration and orchestration.
 - `results/`: policy and small reproducibility artifacts, not bulk raw data.
-- `docs/`: architecture, literature, setup, decisions, and AI-use notes.
 
 ## License
 
