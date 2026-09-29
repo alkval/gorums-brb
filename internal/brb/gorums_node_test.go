@@ -2,6 +2,7 @@ package brb
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +15,10 @@ import (
 
 func localNodes(t *testing.T, count, f int) ([]*GorumsNode, []*gorums.System, []chan Delivery) {
 	t.Helper()
-	opts := gorums.WithDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()))
+	opts := gorums.WithDialOptions(
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
+	)
 	systems, stop, err := gorums.NewLocalSystems(count, opts)
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +117,7 @@ func TestGorumsConcurrentBroadcastsAndSequenceReuse(t *testing.T) {
 		for range nodes {
 			select {
 			case d := <-ch:
-				if seen[d.ID] || d.ID.Sequence != 2 || len(d.Value) != 1 || int(d.Value[0]) != int(d.ID.Origin)-1 {
+				if seen[d.ID] || d.ID.Origin < 1 || d.ID.Origin > ProcessID(len(nodes)) || d.ID.Sequence != 2 || len(d.Value) != 1 || int(d.Value[0]) != int(d.ID.Origin)-1 {
 					t.Fatalf("invalid delivery %+v", d)
 				}
 				seen[d.ID] = true
@@ -133,7 +137,54 @@ func TestGorumsRejectsMissingConfiguration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sys.Stop()
+	if _, err := NewGorumsNode(nil, sys, 0, nil); err == nil {
+		t.Fatal("accepted nil context")
+	}
 	if _, err := NewGorumsNode(t.Context(), sys, 0, nil); err == nil {
 		t.Fatal("accepted absent configuration")
+	}
+}
+
+func TestBroadcastRejectsZeroSequenceAndCancelledContext(t *testing.T) {
+	systems, stop, err := gorums.NewLocalSystems(1,
+		gorums.WithDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials())))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	node, err := NewGorumsNode(ctx, systems[0], 0, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := node.Broadcast(0, []byte("value")); err == nil {
+		t.Fatal("accepted sequence zero")
+	}
+	cancel()
+	if err := node.Broadcast(1, []byte("value")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want context cancellation", err)
+	}
+	if len(node.started) != 0 {
+		t.Fatal("invalid broadcast reserved a sequence")
+	}
+}
+
+func TestGorumsDeliversEmptyValue(t *testing.T) {
+	nodes, systems, deliveries := localNodes(t, 1, 0)
+	serve(t, systems)
+	if err := nodes[0].Broadcast(1, nil); err != nil {
+		t.Fatal(err)
+	}
+	awaitDelivery(t, deliveries[0], BroadcastID{1, 1}, "")
+}
+
+func TestPhaseMessageOwnsPayload(t *testing.T) {
+	value := []byte("original")
+	id := BroadcastID{1, 2}
+	msg := phaseMessage(3, id, value)
+	value[0] = 'X'
+	if msg.GetSender() != 3 || msg.GetId().GetOrigin() != 1 || msg.GetId().GetSequence() != 2 || string(msg.GetValue()) != "original" {
+		t.Fatal("phase message lost its identifier or shared the input payload")
 	}
 }

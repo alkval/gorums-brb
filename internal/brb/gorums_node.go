@@ -121,7 +121,8 @@ func (n *GorumsNode) handle(ctx gorums.ServerCtx, phase Phase, msg *brbv1.PhaseM
 			}
 		}
 		if err != nil {
-			// No recovery in this prototype. Treat a send failure as a failed run.
+			// Log the failed multicast. This prototype cannot recover it and
+			// does not stop the whole process automatically.
 			log.Printf("brb node %d: multicast for %v failed: %v", n.self, id, err)
 			return
 		}

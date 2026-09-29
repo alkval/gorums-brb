@@ -41,7 +41,8 @@ type Action struct {
 }
 
 // Machine owns the state for every broadcast instance observed by one process.
-// It is safe for concurrent use.
+// It is safe for concurrent use. Completed IDs remain until the machine is
+// discarded, so delayed messages cannot cause a second delivery.
 type Machine struct {
 	mu        sync.Mutex
 	n         int

@@ -18,6 +18,9 @@ func TestSendFromDesignatedOriginEmitsOneEcho(t *testing.T) {
 	if actions := handle(t, machine, 1, PhaseSend, id, "value"); len(actions) != 0 {
 		t.Fatalf("duplicate SEND emitted %v", actions)
 	}
+	if actions := handle(t, machine, 1, PhaseSend, id, "conflict"); len(actions) != 0 {
+		t.Fatalf("conflicting SEND emitted a second ECHO: %v", actions)
+	}
 }
 
 func TestEchoThresholdCountsDistinctSenders(t *testing.T) {
@@ -65,23 +68,41 @@ func TestConflictingValuesDoNotCauseTwoLocalReadyMessages(t *testing.T) {
 
 func TestBroadcastInstancesAreIndependent(t *testing.T) {
 	machine := newTestMachine(t)
-	for sequence := uint64(1); sequence <= 2; sequence++ {
-		id := BroadcastID{Origin: 1, Sequence: sequence}
-		actions := handle(t, machine, 1, PhaseSend, id, "value")
+	for _, id := range []BroadcastID{{1, 1}, {1, 2}, {2, 1}} {
+		actions := handle(t, machine, id.Origin, PhaseSend, id, "value")
 		assertSingleAction(t, actions, ActionMulticastEcho, "value")
+		if actions[0].ID != id {
+			t.Fatalf("action has ID %+v, want %+v", actions[0].ID, id)
+		}
 	}
 }
 
 func TestRejectsInvalidConfigurationAndIdentifiers(t *testing.T) {
-	if _, err := NewMachine(3, 1); err == nil {
-		t.Fatal("NewMachine accepted n <= 3f")
+	for _, cfg := range [][2]int{{0, 0}, {-1, 0}, {4, -1}, {3, 1}} {
+		if _, err := NewMachine(cfg[0], cfg[1]); err == nil {
+			t.Fatalf("accepted invalid configuration %v", cfg)
+		}
 	}
 	machine := newTestMachine(t)
-	if _, err := machine.Handle(5, PhaseEcho, BroadcastID{Origin: 1, Sequence: 1}, []byte("value")); err == nil {
-		t.Fatal("Handle accepted sender outside membership")
+	for _, msg := range []struct {
+		from  ProcessID
+		phase Phase
+		id    BroadcastID
+	}{
+		{0, PhaseEcho, BroadcastID{1, 1}},
+		{5, PhaseEcho, BroadcastID{1, 1}},
+		{1, PhaseEcho, BroadcastID{0, 1}},
+		{1, PhaseEcho, BroadcastID{5, 1}},
+		{1, PhaseEcho, BroadcastID{1, 0}},
+		{1, 0, BroadcastID{1, 1}},
+		{1, PhaseReady + 1, BroadcastID{1, 1}},
+	} {
+		if _, err := machine.Handle(msg.from, msg.phase, msg.id, []byte("value")); err == nil {
+			t.Fatalf("accepted invalid message %+v", msg)
+		}
 	}
-	if _, err := machine.Handle(1, PhaseEcho, BroadcastID{Origin: 1}, []byte("value")); err == nil {
-		t.Fatal("Handle accepted sequence zero")
+	if len(machine.instances) != 0 {
+		t.Fatal("invalid messages allocated instance state")
 	}
 }
 
@@ -141,7 +162,7 @@ func TestFirstVoteBoundsStorageAndDeliveryReleasesVotes(t *testing.T) {
 }
 
 func TestThresholdsAcrossMembershipSizes(t *testing.T) {
-	for _, cfg := range [][2]int{{1, 0}, {4, 1}, {6, 1}, {7, 2}, {10, 3}} {
+	for _, cfg := range [][2]int{{1, 0}, {3, 0}, {4, 1}, {5, 1}, {6, 1}, {7, 2}, {8, 2}, {10, 3}} {
 		n, f := cfg[0], cfg[1]
 		t.Run(fmt.Sprint(cfg), func(t *testing.T) {
 			m, err := NewMachine(n, f)
@@ -189,7 +210,37 @@ func TestActionsOwnTheirPayload(t *testing.T) {
 	assertSingleAction(t, actions, ActionMulticastEcho, "original")
 }
 
-// A small deterministic network simulator: correct processes run Machine,
+func TestVotesForDifferentValuesDoNotCombine(t *testing.T) {
+	m := newTestMachine(t)
+	id := BroadcastID{1, 1}
+	for _, phase := range []Phase{PhaseEcho, PhaseReady} {
+		if actions := handle(t, m, 1, phase, id, "A"); len(actions) != 0 {
+			t.Fatalf("first vote emitted %v", actions)
+		}
+		if actions := handle(t, m, 2, phase, id, "B"); len(actions) != 0 {
+			t.Fatalf("different values combined: %v", actions)
+		}
+		// Changing a previous vote must not add evidence for another value.
+		if actions := handle(t, m, 2, phase, id, "A"); len(actions) != 0 {
+			t.Fatalf("conflicting vote counted twice: %v", actions)
+		}
+	}
+	if actions := handle(t, m, 3, PhaseEcho, id, "A"); len(actions) != 0 {
+		t.Fatalf("two matching ECHOs emitted %v", actions)
+	}
+	assertSingleAction(t, handle(t, m, 4, PhaseEcho, id, "A"), ActionMulticastReady, "A")
+	if actions := handle(t, m, 3, PhaseReady, id, "A"); len(actions) != 0 {
+		t.Fatalf("two matching READYs delivered or repeated READY: %v", actions)
+	}
+	assertSingleAction(t, handle(t, m, 4, PhaseReady, id, "A"), ActionDeliver, "A")
+	for _, phase := range []Phase{PhaseSend, PhaseEcho, PhaseReady} {
+		if actions := handle(t, m, 1, phase, id, "late"); len(actions) != 0 {
+			t.Fatalf("delivered instance restarted on phase %d: %v", phase, actions)
+		}
+	}
+}
+
+// A small deterministic single-broadcast simulator: correct processes run Machine,
 // faulty processes send only explicitly injected messages. Each event can be
 // duplicated, and every queued event is eventually processed in random order.
 type event struct {
@@ -204,10 +255,19 @@ func simulate(t *testing.T, n, f int, correct []ProcessID, queue []event, seed i
 	queue = append([]event(nil), queue...)
 	machines := map[ProcessID]*Machine{}
 	for _, id := range correct {
-		machines[id], _ = NewMachine(n, f)
+		m, err := NewMachine(n, f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		machines[id] = m
 	}
 	delivered := map[ProcessID]string{}
-	emitted := map[[3]uint64]bool{}
+	type actionKey struct {
+		node   ProcessID
+		action ActionType
+		id     BroadcastID
+	}
+	emitted := map[actionKey]bool{}
 	rng := rand.New(rand.NewSource(seed))
 	steps := 0
 	for len(queue) > 0 {
@@ -227,7 +287,7 @@ func simulate(t *testing.T, n, f int, correct []ProcessID, queue []event, seed i
 		for range repeats {
 			actions := handle(t, m, e.from, e.phase, e.id, e.value)
 			for _, a := range actions {
-				key := [3]uint64{uint64(e.to), uint64(a.Type), a.ID.Sequence}
+				key := actionKey{e.to, a.Type, a.ID}
 				if emitted[key] {
 					t.Fatalf("node %d emitted action %d twice", e.to, a.Type)
 				}

@@ -1,6 +1,6 @@
 GO := GOTOOLCHAIN=go1.26.7 go
-GORUMS_PROTO_DIR := $(shell $(GO) list -m -f '{{.Dir}}' github.com/relab/gorums)
-PROTO_FILES := $(shell find proto -name '*.proto' -type f)
+GORUMS_PROTO_DIR = $(shell $(GO) list -m -f '{{.Dir}}' github.com/relab/gorums)
+PROTO_FILES = $(shell find proto -name '*.proto' -type f)
 
 .PHONY: fmt generate test vet
 
