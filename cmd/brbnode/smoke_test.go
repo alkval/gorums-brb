@@ -15,6 +15,15 @@ import (
 )
 
 func TestFourProcessesDeliver(t *testing.T) {
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0)
+}
+
+func TestFourProcessesDeliverWithLateOrigin(t *testing.T) {
+	testFourProcessesDeliver(t, []int{2, 3, 4, 1}, 2*time.Second)
+}
+
+func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Duration) {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("separate-process smoke test")
 	}
@@ -102,8 +111,12 @@ func TestFourProcessesDeliver(t *testing.T) {
 	})
 
 	peers := strings.Join(addresses, ",")
-	// Start the origin first to check that it waits while its peers start.
-	for _, id := range []int{1, 2, 3, 4} {
+	var lastStarted time.Time
+	for _, id := range order {
+		if id == 1 && originDelay > 0 {
+			// Let receivers retry connections while the origin is still missing.
+			time.Sleep(originDelay)
+		}
 		logPath := filepath.Join(tmp, fmt.Sprintf("node%d.log", id))
 		output, err := os.Create(logPath)
 		if err != nil {
@@ -126,6 +139,7 @@ func TestFourProcessesDeliver(t *testing.T) {
 			close(p.done)
 		}()
 		processes = append(processes, p)
+		lastStarted = time.Now()
 	}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
@@ -149,6 +163,7 @@ func TestFourProcessesDeliver(t *testing.T) {
 		}
 		if allDelivered {
 			checkDeliveries = true
+			t.Logf("all four delivered %s after the last process started", time.Since(lastStarted))
 			return // cleanup checks the final logs and each process's exit status
 		}
 		select {

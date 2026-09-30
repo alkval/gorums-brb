@@ -18,6 +18,7 @@ import (
 	"github.com/alkval/gorums-brb/internal/brb"
 	"github.com/relab/gorums"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -104,9 +105,14 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 
 func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	peers := gorums.WithNodeList(opts.peers)
+	// Keep connection retries short while peers are started in separate terminals.
+	connectionBackoff := backoff.DefaultConfig
+	connectionBackoff.BaseDelay = 100 * time.Millisecond
+	connectionBackoff.MaxDelay = time.Second
 	system, err := gorums.NewSystem(opts.peers[opts.id-1],
 		gorums.WithServerOptions(gorums.WithConfig(uint32(opts.id), peers)),
 		gorums.WithOutboundNodes(peers),
+		gorums.WithBackoff(connectionBackoff),
 		gorums.WithDialOptions(
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			// Peers start separately. Let initial streams wait for their servers

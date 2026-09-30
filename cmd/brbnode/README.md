@@ -89,8 +89,13 @@ and membership, while `WithOutboundNodes` provides the configuration used by
 the generated multicast calls. The BRB service is registered before `Serve`
 starts. Deliveries print the local node ID, origin, sequence number, and value.
 The gRPC `WaitForReady` option lets initial streams wait while the other
-processes start. It does not add protocol-level retries or guarantee recovery
-of BRB messages after a connection failure.
+processes start. `WithBackoff` sets an initial connection retry delay of 100 ms
+and a maximum backoff of 1 second, keeping the default multiplier and jitter.
+This reduces the extra wait when nodes start at different times. The settings
+control connection retries, not BRB latency or a delivery deadline. They cause
+more frequent connection attempts while a peer is unavailable and should be
+reviewed before cluster experiments. Neither option adds protocol-level retries
+or guarantees recovery of BRB messages after a connection failure.
 
 Ctrl+C or SIGTERM cancels the protocol context, then closes the Gorums system,
 connections, and listening port. A port already in use produces a startup error.
@@ -128,18 +133,22 @@ builds a temporary executable and runs four separate processes with `n=4,f=1`
 on temporary localhost ports. It starts the origin first to check startup while
 peers are still missing. It checks that every process logs exactly one
 delivery of `origin=1, sequence=1, value="hello"`, and rejects other deliveries.
-It allows 20 seconds for delivery, sends SIGTERM to all children during cleanup,
-and fails if a child exits early, exits with an error, or needs a forced stop.
+`TestFourProcessesDeliverWithLateOrigin` repeats the check with the receivers
+started first and the origin started two seconds later, exercising connection
+retries while the origin is missing. Both tests log the time from the last
+process starting to all four deliveries, without imposing a tight timing limit.
+Each test allows 20 seconds for delivery, sends SIGTERM to all children during
+cleanup, and fails if a child exits early, exits with an error, or needs a forced stop.
 Failed runs include the process logs in the test output. The temporary binary and logs are
 removed by Go's test cleanup.
 
-Run just this smoke test without cached results:
+Run both smoke tests without cached results:
 
 ```sh
-GOTOOLCHAIN=go1.26.7 go test -v -count=1 ./cmd/brbnode -run '^TestFourProcessesDeliver$'
+GOTOOLCHAIN=go1.26.7 go test -v -count=1 ./cmd/brbnode -run '^TestFourProcessesDeliver'
 ```
 
-`make test` includes it. `go test -short ./...` skips this smoke test, but still
+`make test` includes both. `go test -short ./...` skips these smoke tests, but still
 runs the other tests, including the in-process Gorums integration tests.
 This is a local correctness check, not a benchmark or a cluster orchestrator.
 Run all checks from the repository root:
