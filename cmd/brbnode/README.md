@@ -65,10 +65,23 @@ The `submitted` line means node 1 completed the initial multicast call, not
 that all nodes delivered. Check the `delivered` line in each terminal. These
 logs may interleave, so local delivery can appear before `submitted`.
 
+To send several broadcasts in the same run, use this command for node 1 instead:
+
+```sh
+./bin/brbnode -id 1 -f 1 -peers "$peers" -broadcast hello -count 3
+```
+
+Node 1 waits for peers once, then submits the same value with sequence numbers
+1, 2, and 3. Every node should print one delivery for each sequence. Submissions
+do not wait for all deliveries, so instances may overlap and delivery order is
+not guaranteed. After submitting the requested broadcasts, the node stays
+running to handle messages. This is a finite demo, not a rate-controlled workload
+or an interactive message prompt.
+
 Stop all four processes with Ctrl+C when finished. Restart the whole group
-before repeating this demonstration. The one-shot trigger always uses sequence
-1, and surviving processes retain the completed-instance marker from a prior
-run. Restarting only the origin could therefore suppress the next delivery.
+before repeating the demonstration. Sequences start at 1 on each launch, and
+surviving processes retain completed-instance markers from a prior run.
+Restarting only the origin could therefore suppress subsequent deliveries.
 
 ## Configuration
 
@@ -76,8 +89,11 @@ run. Restarting only the origin could therefore suppress the next delivery.
 - `-f`: the fault bound. This flag is required, even when the bound is zero.
 - `-peers`: comma-separated `host:port` addresses in node-ID order. The first
   address belongs to node 1, the second to node 2, and so on.
-- `-broadcast`: optional nonempty value to broadcast once. An empty value or
+- `-broadcast`: optional nonempty value to broadcast. An empty value or
   an omitted flag means this process does not initiate a broadcast.
+- `-count`: number of broadcasts to submit, default 1. Must be positive.
+  Values greater than 1 require a nonempty `-broadcast`. Each broadcast uses
+  the same value but a distinct sequence number, from 1 through `count`.
 
 Every process must use the same ordered peer list and fault bound. Its own
 address is also its listening address. Hostnames are resolved at startup.
@@ -123,7 +139,7 @@ on localhost or an approved test network. It does not verify that peers use
 identical configurations. The demo uses four correct processes on one machine,
 not a Byzantine fault scenario or a multi-machine deployment. There is no
 cluster runner or performance instrumentation yet. All peers must be connected
-before the one-shot trigger sends, even when `f` is greater than zero.
+before the demo submits broadcasts, even when `f` is greater than zero.
 
 Command tests cover argument validation, startup, cancellation, port release,
 an occupied listening port, the one-shot trigger delivering to itself, and
@@ -137,18 +153,21 @@ delivery of `origin=1, sequence=1, value="hello"`, and rejects other deliveries.
 started first and the origin started two seconds later, exercising connection
 retries while the origin is missing. Both tests log the time from the last
 process starting to all four deliveries, without imposing a tight timing limit.
+`TestFourProcessesDeliverRepeatedBroadcasts` starts the origin with `-count 3`
+and checks exactly one matching delivery for each of sequences 1, 2, and 3 at
+every process, without requiring a particular delivery order.
 Each test allows 20 seconds for delivery, sends SIGTERM to all children during
 cleanup, and fails if a child exits early, exits with an error, or needs a forced stop.
 Failed runs include the process logs in the test output. The temporary binary and logs are
 removed by Go's test cleanup.
 
-Run both smoke tests without cached results:
+Run all smoke tests without cached results:
 
 ```sh
 GOTOOLCHAIN=go1.26.7 go test -v -count=1 ./cmd/brbnode -run '^TestFourProcessesDeliver'
 ```
 
-`make test` includes both. `go test -short ./...` skips these smoke tests, but still
+`make test` includes all three. `go test -short ./...` skips these smoke tests, but still
 runs the other tests, including the in-process Gorums integration tests.
 This is a local correctness check, not a benchmark or a cluster orchestrator.
 Run all checks from the repository root:

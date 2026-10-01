@@ -26,7 +26,8 @@ type options struct {
 	id        uint
 	f         int
 	peers     []string // list position determines the process ID, starting at 1
-	broadcast string   // optional one-shot value, using sequence 1
+	broadcast string   // optional value, repeated with distinct sequence numbers
+	count     int
 }
 
 func main() {
@@ -56,12 +57,19 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.UintVar(&opts.id, "id", 0, "this node's ID (1 through the number of peers)")
 	flags.IntVar(&opts.f, "f", -1, "fault bound, required (n must be greater than 3*f)")
 	flags.StringVar(&peers, "peers", "", "comma-separated host:port addresses, ordered by node ID")
-	flags.StringVar(&opts.broadcast, "broadcast", "", "broadcast one nonempty value after all peers connect")
+	flags.StringVar(&opts.broadcast, "broadcast", "", "nonempty value to broadcast after all peers connect")
+	flags.IntVar(&opts.count, "count", 1, "number of broadcasts, using sequences 1 through count")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
 	if flags.NArg() != 0 {
 		return opts, errors.New("brbnode: unexpected positional arguments")
+	}
+	if opts.count < 1 {
+		return opts, errors.New("brbnode: -count must be positive")
+	}
+	if opts.count > 1 && opts.broadcast == "" {
+		return opts, errors.New("brbnode: -count greater than 1 requires -broadcast")
 	}
 	if strings.TrimSpace(peers) == "" {
 		return opts, errors.New("brbnode: -peers is required")
@@ -158,10 +166,14 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		if err != nil {
 			return fmt.Errorf("brbnode: wait for peers: %w", err)
 		}
-		if err := node.Broadcast(1, []byte(opts.broadcast)); err != nil {
-			return fmt.Errorf("brbnode: broadcast: %w", err)
+		value := []byte(opts.broadcast)
+		for i := range opts.count {
+			sequence := uint64(i) + 1
+			if err := node.Broadcast(sequence, value); err != nil {
+				return fmt.Errorf("brbnode: broadcast sequence %d: %w", sequence, err)
+			}
+			logger.Printf("node %d submitted origin=%d sequence=%d value=%q", opts.id, opts.id, sequence, opts.broadcast)
 		}
-		logger.Printf("node %d submitted origin=%d sequence=1 value=%q", opts.id, opts.id, opts.broadcast)
 	}
 	select {
 	case <-ctx.Done():

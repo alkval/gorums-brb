@@ -21,9 +21,10 @@ confirmation.
   tests of recovery from broken connections.
 - The current Gorums revision is pinned as a Go dependency.
 - A minimal [node executable](cmd/brbnode/README.md) starts one Gorums system,
-  prints deliveries, and shuts down on Ctrl+C. Its one-shot broadcast flag
-  supports a four-process local demonstration. A separate-process smoke test
-  builds the executable, checks all four deliveries, and verifies clean shutdown.
+  prints deliveries, and shuts down on Ctrl+C. Its broadcast flag supports a
+  four-process local demonstration, with `-count` for repeated broadcasts using
+  distinct sequences. Separate-process smoke tests build the executable, check
+  delivery of each instance at all four nodes, and verify clean shutdown.
 - Thesis writing is maintained separately in Overleaf and intentionally excluded
   from this source-code repository.
 - The source repository is public; thesis writing remains private in Overleaf.
@@ -55,7 +56,7 @@ For the first prototype demonstration, follow the
 To check the same setup automatically with a fresh run:
 
 ```sh
-GOTOOLCHAIN=go1.26.7 go test -v -count=1 ./cmd/brbnode -run '^TestFourProcessesDeliver$'
+GOTOOLCHAIN=go1.26.7 go test -v -count=1 ./cmd/brbnode -run '^TestFourProcessesDeliver'
 ```
 
 ## Repository map

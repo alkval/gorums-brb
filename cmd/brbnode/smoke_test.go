@@ -15,14 +15,18 @@ import (
 )
 
 func TestFourProcessesDeliver(t *testing.T) {
-	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0)
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, 1)
 }
 
 func TestFourProcessesDeliverWithLateOrigin(t *testing.T) {
-	testFourProcessesDeliver(t, []int{2, 3, 4, 1}, 2*time.Second)
+	testFourProcessesDeliver(t, []int{2, 3, 4, 1}, 2*time.Second, 1)
 }
 
-func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Duration) {
+func TestFourProcessesDeliverRepeatedBroadcasts(t *testing.T) {
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, 3)
+}
+
+func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Duration, count int) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("separate-process smoke test")
@@ -93,19 +97,25 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 			if !checkDeliveries {
 				continue
 			}
-			expected := fmt.Sprintf("node %d delivered origin=1 sequence=1 value=\"hello\"", p.id)
-			count := 0
+			expected := make(map[string]int)
+			for i := range count {
+				expected[fmt.Sprintf("origin=1 sequence=%d value=\"hello\"", i+1)] = 0
+			}
 			for _, line := range strings.Split(string(output), "\n") {
 				if !strings.Contains(line, " delivered ") {
 					continue
 				}
-				if !strings.HasSuffix(line, expected) {
+				_, delivery, found := strings.Cut(line, fmt.Sprintf("node %d delivered ", p.id))
+				if _, valid := expected[delivery]; !found || !valid {
 					t.Errorf("node %d unexpected delivery: %s", p.id, line)
+					continue
 				}
-				count++
+				expected[delivery]++
 			}
-			if count != 1 {
-				t.Errorf("node %d logged %d deliveries, want 1", p.id, count)
+			for delivery, occurrences := range expected {
+				if occurrences != 1 {
+					t.Errorf("node %d logged %d deliveries of %s, want 1", p.id, occurrences, delivery)
+				}
 			}
 		}
 	})
@@ -125,6 +135,9 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 		args := []string{"-id", strconv.Itoa(id), "-f", "1", "-peers", peers}
 		if id == 1 {
 			args = append(args, "-broadcast", "hello")
+			if count != 1 {
+				args = append(args, "-count", strconv.Itoa(count))
+			}
 		}
 		cmd := exec.Command(binary, args...)
 		cmd.Stdout, cmd.Stderr = output, output
@@ -158,17 +171,19 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 			if err != nil {
 				t.Fatal(err)
 			}
-			expected := fmt.Sprintf("node %d delivered origin=1 sequence=1 value=\"hello\"", p.id)
-			allDelivered = allDelivered && strings.Contains(string(output), expected)
+			for i := range count {
+				expected := fmt.Sprintf("node %d delivered origin=1 sequence=%d value=\"hello\"", p.id, i+1)
+				allDelivered = allDelivered && strings.Contains(string(output), expected)
+			}
 		}
 		if allDelivered {
 			checkDeliveries = true
-			t.Logf("all four delivered %s after the last process started", time.Since(lastStarted))
+			t.Logf("all four delivered %d broadcasts %s after the last process started", count, time.Since(lastStarted))
 			return // cleanup checks the final logs and each process's exit status
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatal("timed out waiting for all four deliveries")
+			t.Fatal("timed out waiting for all broadcasts at all four processes")
 		case <-ticker.C:
 		}
 	}

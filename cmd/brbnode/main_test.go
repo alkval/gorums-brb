@@ -19,8 +19,21 @@ func TestParseOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.id != 2 || opts.f != 1 || len(opts.peers) != 4 || opts.peers[1] != "127.0.0.1:7002" || opts.broadcast != "hello" {
+	if opts.id != 2 || opts.f != 1 || len(opts.peers) != 4 || opts.peers[1] != "127.0.0.1:7002" || opts.broadcast != "hello" || opts.count != 1 {
 		t.Fatalf("unexpected options: %+v", opts)
+	}
+}
+
+func TestParseBroadcastCount(t *testing.T) {
+	opts, err := parseOptions([]string{
+		"-id", "1", "-f", "0", "-peers", "127.0.0.1:7001",
+		"-broadcast", "hello", "-count", "3",
+	}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.count != 3 {
+		t.Fatalf("count = %d, want 3", opts.count)
 	}
 }
 
@@ -29,6 +42,9 @@ func TestRejectInvalidOptions(t *testing.T) {
 		name string
 		args []string
 	}{
+		{"zero count", []string{"-id", "1", "-f", "0", "-peers", "127.0.0.1:7001", "-broadcast", "hello", "-count", "0"}},
+		{"negative count", []string{"-id", "1", "-f", "0", "-peers", "127.0.0.1:7001", "-broadcast", "hello", "-count", "-1"}},
+		{"count without broadcast", []string{"-id", "1", "-f", "0", "-peers", "127.0.0.1:7001", "-count", "3"}},
 		{"missing peers", []string{"-id", "1", "-f", "0"}},
 		{"missing ID", []string{"-f", "0", "-peers", "127.0.0.1:7001"}},
 		{"ID outside membership", []string{"-id", "2", "-f", "0", "-peers", "127.0.0.1:7001"}},
@@ -234,6 +250,40 @@ type logWriter func(string)
 func (write logWriter) Write(p []byte) (int, error) {
 	write(string(p))
 	return len(p), nil
+}
+
+func TestRunStopsBetweenBroadcasts(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := parseOptions([]string{
+		"-id", "1", "-f", "0", "-peers", addr,
+		"-broadcast", "hello", "-count", "3",
+	}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	submitted := 0
+	// Cancel after the first submission, before the loop starts another.
+	logger := log.New(logWriter(func(line string) {
+		if strings.Contains(line, "submitted origin=1") {
+			submitted++
+			cancel()
+		}
+	}), "", 0)
+	if err := run(ctx, opts, logger); err != nil {
+		t.Fatalf("requested shutdown reported a failure: %v", err)
+	}
+	if submitted != 1 {
+		t.Fatalf("submitted %d broadcasts, want 1", submitted)
+	}
 }
 
 func TestRunStopsBeforeInitialBroadcast(t *testing.T) {
