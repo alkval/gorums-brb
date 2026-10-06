@@ -21,22 +21,22 @@ type Delivery struct {
 type GorumsNode struct {
 	self      ProcessID
 	machine   *Machine
-	config    gorums.Configuration
+	config    gorums.Config
 	ctx       context.Context // lifetime of the experiment, not one incoming request
 	onDeliver func(Delivery)
 	mu        sync.Mutex // protects sequence reservations
 	started   map[uint64]bool
 }
 
-// NewGorumsNode registers the adapter before system.Serve. All processes must
+// NewGorumsNode registers the adapter before server.Serve. All processes must
 // use the same fixed configuration (IDs 1..n) and fault bound. Keep ctx alive
-// throughout the run, then cancel it before system.Stop. The caller owns both.
+// throughout the run, then cancel it before server.Stop. The caller owns both.
 // onDeliver must be quick and safe for concurrent calls.
-func NewGorumsNode(ctx context.Context, system *gorums.System, f int, onDeliver func(Delivery)) (*GorumsNode, error) {
-	if ctx == nil || system == nil {
-		return nil, errors.New("brb: nil run context or Gorums system")
+func NewGorumsNode(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*GorumsNode, error) {
+	if ctx == nil || server == nil {
+		return nil, errors.New("brb: nil run context or Gorums server")
 	}
-	config := system.OutboundConfig()
+	config := server.PeerConfig()
 	machine, err := NewMachine(len(config), f)
 	if err != nil {
 		return nil, err
@@ -46,8 +46,7 @@ func NewGorumsNode(ctx context.Context, system *gorums.System, f int, onDeliver 
 			return nil, errors.New("brb: configuration must contain sorted IDs 1..n")
 		}
 	}
-	var self ProcessID
-	system.RegisterService(nil, func(s *gorums.Server) { self = ProcessID(s.NodeID()) })
+	self := ProcessID(server.NodeID())
 	if self == 0 || uint64(self) > uint64(len(config)) {
 		return nil, errors.New("brb: server identity is outside configuration")
 	}
@@ -55,7 +54,7 @@ func NewGorumsNode(ctx context.Context, system *gorums.System, f int, onDeliver 
 		self: self, machine: machine, config: config, ctx: ctx,
 		onDeliver: onDeliver, started: make(map[uint64]bool),
 	}
-	system.RegisterService(nil, func(s *gorums.Server) { brbv1.RegisterBroadcastServer(s, node) })
+	brbv1.RegisterBroadcastServer(server, node)
 	return node, nil
 }
 
@@ -77,22 +76,22 @@ func (n *GorumsNode) Broadcast(sequence uint64, value []byte) error {
 	n.started[sequence] = true
 	n.mu.Unlock()
 	id := BroadcastID{Origin: n.self, Sequence: sequence}
-	return brbv1.Send(n.config.Context(n.ctx), phaseMessage(n.self, id, value))
+	return brbv1.Send(n.config.Context(n.ctx), phaseMessage(n.self, id, value)).Send()
 }
 
-func (n *GorumsNode) Send(ctx gorums.ServerCtx, msg *brbv1.PhaseMessage) {
+func (n *GorumsNode) Send(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	n.handle(ctx, PhaseSend, msg)
 }
 
-func (n *GorumsNode) Echo(ctx gorums.ServerCtx, msg *brbv1.PhaseMessage) {
+func (n *GorumsNode) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	n.handle(ctx, PhaseEcho, msg)
 }
 
-func (n *GorumsNode) Ready(ctx gorums.ServerCtx, msg *brbv1.PhaseMessage) {
+func (n *GorumsNode) Ready(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	n.handle(ctx, PhaseReady, msg)
 }
 
-func (n *GorumsNode) handle(ctx gorums.ServerCtx, phase Phase, msg *brbv1.PhaseMessage) {
+func (n *GorumsNode) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.PhaseMessage) {
 	// Machine.Handle has its own lock. Release Gorums before sending to self
 	// or calling user code, which can cause more requests to this node.
 	ctx.Release()
@@ -112,9 +111,9 @@ func (n *GorumsNode) handle(ctx gorums.ServerCtx, phase Phase, msg *brbv1.PhaseM
 	for _, action := range actions {
 		switch action.Type {
 		case ActionMulticastEcho:
-			err = brbv1.Echo(n.config.Context(n.ctx), phaseMessage(n.self, action.ID, action.Value))
+			err = brbv1.Echo(n.config.Context(n.ctx), phaseMessage(n.self, action.ID, action.Value)).Send()
 		case ActionMulticastReady:
-			err = brbv1.Ready(n.config.Context(n.ctx), phaseMessage(n.self, action.ID, action.Value))
+			err = brbv1.Ready(n.config.Context(n.ctx), phaseMessage(n.self, action.ID, action.Value)).Send()
 		case ActionDeliver:
 			if n.onDeliver != nil {
 				n.onDeliver(Delivery{ID: action.ID, Value: action.Value})

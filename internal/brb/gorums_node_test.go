@@ -13,13 +13,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func localNodes(t *testing.T, count, f int) ([]*GorumsNode, []*gorums.System, []chan Delivery) {
+func localNodes(t *testing.T, count, f int) ([]*GorumsNode, []*gorums.Server, []chan Delivery) {
 	t.Helper()
-	opts := gorums.WithDialOptions(
+	opts := gorums.WithGRPCDialOptions(
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 	)
-	systems, stop, err := gorums.NewLocalSystems(count, opts)
+	systems, stop, err := gorums.NewLocalServers(count, gorums.WithLocalDialOptions(opts))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,15 +40,15 @@ func localNodes(t *testing.T, count, f int) ([]*GorumsNode, []*gorums.System, []
 
 // Establish all connections before testing protocol messages. This prototype
 // does not provide transport recovery for unavailable peers.
-func serve(t *testing.T, systems []*gorums.System) {
+func serve(t *testing.T, systems []*gorums.Server) {
 	t.Helper()
 	for _, sys := range systems {
-		go func() { _ = sys.Serve() }()
+		go func() { _ = sys.ListenAndServe() }()
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	for _, sys := range systems {
-		if err := sys.WaitForConfig(ctx, func(c gorums.Configuration) bool {
+		if err := sys.WaitForPeers(ctx, func(c gorums.Config) bool {
 			return len(c) == len(systems)
 		}); err != nil {
 			t.Fatal(err)
@@ -130,12 +130,9 @@ func TestGorumsConcurrentBroadcastsAndSequenceReuse(t *testing.T) {
 
 func TestGorumsRejectsMissingConfiguration(t *testing.T) {
 	if _, err := NewGorumsNode(t.Context(), nil, 1, nil); err == nil {
-		t.Fatal("accepted nil system")
+		t.Fatal("accepted nil server")
 	}
-	sys, err := gorums.NewSystem("127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sys := gorums.NewServer()
 	defer sys.Stop()
 	if _, err := NewGorumsNode(nil, sys, 0, nil); err == nil {
 		t.Fatal("accepted nil context")
@@ -146,8 +143,8 @@ func TestGorumsRejectsMissingConfiguration(t *testing.T) {
 }
 
 func TestBroadcastRejectsZeroSequenceAndCancelledContext(t *testing.T) {
-	systems, stop, err := gorums.NewLocalSystems(1,
-		gorums.WithDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials())))
+	systems, stop, err := gorums.NewLocalServers(1,
+		gorums.WithLocalDialOptions(gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()))))
 	if err != nil {
 		t.Fatal(err)
 	}

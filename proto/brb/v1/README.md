@@ -7,6 +7,11 @@ return type is required by the service definition, but multicast sends no reply.
 Successful sending does not mean that recipients processed or delivered the
 value. This prototype does not retry failed sends.
 
+The generated multicast functions return an `OnewayCall`. The adapter invokes
+`.Send()` to perform each multicast and obtain its send error. The pinned runtime
+uses `gorums.ServerContext` in handlers and `gorums.Config` for peer membership.
+The local member is included and served in-process.
+
 Regenerate the Go and Gorums bindings from the repository root:
 
 ```sh

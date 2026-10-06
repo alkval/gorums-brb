@@ -117,20 +117,20 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	connectionBackoff := backoff.DefaultConfig
 	connectionBackoff.BaseDelay = 100 * time.Millisecond
 	connectionBackoff.MaxDelay = time.Second
-	system, err := gorums.NewSystem(opts.peers[opts.id-1],
-		gorums.WithServerOptions(gorums.WithConfig(uint32(opts.id), peers)),
-		gorums.WithOutboundNodes(peers),
+	listener, err := net.Listen("tcp", opts.peers[opts.id-1])
+	if err != nil {
+		return fmt.Errorf("brbnode: listen: %w", err)
+	}
+	defer listener.Close()
+	server := gorums.NewServer(gorums.WithPeers(uint32(opts.id), peers,
 		gorums.WithBackoff(connectionBackoff),
-		gorums.WithDialOptions(
+		gorums.WithGRPCDialOptions(
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			// Peers start separately. Let initial streams wait for their servers
 			// rather than fail before the other terminals have started.
 			grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 		),
-	)
-	if err != nil {
-		return fmt.Errorf("brbnode: create system: %w", err)
-	}
+	))
 	runCtx, cancel := context.WithCancel(ctx)
 	defer func() {
 		// Cancel protocol work before closing the server and its connections.
@@ -139,12 +139,12 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 			err = nil
 		}
-		err = errors.Join(err, system.Stop())
+		server.Stop()
 		if ctx.Err() != nil {
 			logger.Printf("node %d stopping", opts.id)
 		}
 	}()
-	node, err := brb.NewGorumsNode(runCtx, system, opts.f, func(d brb.Delivery) {
+	node, err := brb.NewGorumsNode(runCtx, server, opts.f, func(d brb.Delivery) {
 		logger.Printf("node %d delivered origin=%d sequence=%d value=%q",
 			opts.id, d.ID.Origin, d.ID.Sequence, d.Value)
 	})
@@ -152,14 +152,14 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		return err
 	}
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- system.Serve() }()
-	logger.Printf("node %d listening on %s (n=%d f=%d)", opts.id, system.Addr(), len(opts.peers), opts.f)
+	go func() { serveErr <- server.Serve(listener) }()
+	logger.Printf("node %d listening on %s (n=%d f=%d)", opts.id, listener.Addr(), len(opts.peers), opts.f)
 	if opts.broadcast != "" {
 		// This demo assumes established connections. Wait for the full
 		// membership before asking the adapter to start the broadcast.
 		logger.Printf("node %d waiting for all %d peers before broadcasting", opts.id, len(opts.peers))
 		readyCtx, readyCancel := context.WithTimeout(runCtx, 30*time.Second)
-		err = system.WaitForConfig(readyCtx, func(config gorums.Configuration) bool {
+		err = server.WaitForPeers(readyCtx, func(config gorums.Config) bool {
 			return len(config) == len(opts.peers)
 		})
 		readyCancel()
