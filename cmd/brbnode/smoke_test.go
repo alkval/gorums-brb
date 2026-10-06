@@ -15,18 +15,39 @@ import (
 )
 
 func TestFourProcessesDeliver(t *testing.T) {
-	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, 1)
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{{count: 1}})
 }
 
 func TestFourProcessesDeliverWithLateOrigin(t *testing.T) {
-	testFourProcessesDeliver(t, []int{2, 3, 4, 1}, 2*time.Second, 1)
+	testFourProcessesDeliver(t, []int{2, 3, 4, 1}, 2*time.Second, []senderWorkload{{count: 1}})
 }
 
 func TestFourProcessesDeliverRepeatedBroadcasts(t *testing.T) {
-	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, 3)
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{{count: 3}})
 }
 
-func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Duration, count int) {
+func TestFourProcessesDeliverPeriodicBroadcastsFromEveryNode(t *testing.T) {
+	workload := senderWorkload{count: 3, payloadSize: 256, interval: 50 * time.Millisecond}
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{workload, workload, workload, workload})
+}
+
+func TestFourProcessesDeliverDifferentWorkloads(t *testing.T) {
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{
+		{count: 3, payloadSize: 1},
+		{count: 3, payloadSize: 64, interval: 10 * time.Millisecond},
+		{count: 3, payloadSize: 65, interval: 25 * time.Millisecond},
+		{count: 2, payloadSize: 1 << 20, interval: 50 * time.Millisecond},
+	})
+}
+
+type senderWorkload struct {
+	count       int
+	payloadSize int
+	interval    time.Duration
+}
+
+// The workloads belong to consecutive sender IDs, starting at 1.
+func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Duration, workloads []senderWorkload) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("separate-process smoke test")
@@ -71,6 +92,18 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 		logPath string
 	}
 	var processes []*process
+	expectedDeliveries := make(map[string]int)
+	for sender, workload := range workloads {
+		for i := range workload.count {
+			value := `value="hello"`
+			if workload.payloadSize > 0 && workload.payloadSize <= 64 {
+				value = fmt.Sprintf("value=%q", strings.Repeat("x", workload.payloadSize))
+			} else if workload.payloadSize > 64 {
+				value = fmt.Sprintf("bytes=%d", workload.payloadSize)
+			}
+			expectedDeliveries[fmt.Sprintf("origin=%d sequence=%d %s", sender+1, i+1, value)] = 0
+		}
+	}
 	checkDeliveries := false
 	t.Cleanup(func() {
 		// Signal everyone before waiting, with a forced-stop fallback on failure.
@@ -98,8 +131,8 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 				continue
 			}
 			expected := make(map[string]int)
-			for i := range count {
-				expected[fmt.Sprintf("origin=1 sequence=%d value=\"hello\"", i+1)] = 0
+			for delivery := range expectedDeliveries {
+				expected[delivery] = 0
 			}
 			for _, line := range strings.Split(string(output), "\n") {
 				if !strings.Contains(line, " delivered ") {
@@ -133,11 +166,14 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 			t.Fatal(err)
 		}
 		args := []string{"-id", strconv.Itoa(id), "-f", "1", "-peers", peers}
-		if id == 1 {
-			args = append(args, "-broadcast", "hello")
-			if count != 1 {
-				args = append(args, "-count", strconv.Itoa(count))
+		if id <= len(workloads) {
+			workload := workloads[id-1]
+			if workload.payloadSize > 0 {
+				args = append(args, "-payload-size", strconv.Itoa(workload.payloadSize))
+			} else {
+				args = append(args, "-broadcast", "hello")
 			}
+			args = append(args, "-count", strconv.Itoa(workload.count), "-interval", workload.interval.String())
 		}
 		cmd := exec.Command(binary, args...)
 		cmd.Stdout, cmd.Stderr = output, output
@@ -171,14 +207,14 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 			if err != nil {
 				t.Fatal(err)
 			}
-			for i := range count {
-				expected := fmt.Sprintf("node %d delivered origin=1 sequence=%d value=\"hello\"", p.id, i+1)
+			for delivery := range expectedDeliveries {
+				expected := fmt.Sprintf("node %d delivered %s", p.id, delivery)
 				allDelivered = allDelivered && strings.Contains(string(output), expected)
 			}
 		}
 		if allDelivered {
 			checkDeliveries = true
-			t.Logf("all four delivered %d broadcasts %s after the last process started", count, time.Since(lastStarted))
+			t.Logf("all four delivered %d broadcasts %s after the last process started", len(expectedDeliveries), time.Since(lastStarted))
 			return // cleanup checks the final logs and each process's exit status
 		}
 		select {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -23,11 +24,13 @@ import (
 )
 
 type options struct {
-	id        uint
-	f         int
-	peers     []string // list position determines the process ID, starting at 1
-	broadcast string   // optional value, repeated with distinct sequence numbers
-	count     int
+	id          uint
+	f           int
+	peers       []string // list position determines the process ID, starting at 1
+	broadcast   string   // optional value, repeated with distinct sequence numbers
+	count       int
+	interval    time.Duration
+	payloadSize int
 }
 
 func main() {
@@ -59,6 +62,8 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.StringVar(&peers, "peers", "", "comma-separated host:port addresses, ordered by node ID")
 	flags.StringVar(&opts.broadcast, "broadcast", "", "nonempty value to broadcast after all peers connect")
 	flags.IntVar(&opts.count, "count", 1, "number of broadcasts, using sequences 1 through count")
+	flags.DurationVar(&opts.interval, "interval", 0, "delay after each submission before the next (e.g. 100ms)")
+	flags.IntVar(&opts.payloadSize, "payload-size", 0, "generated payload size in bytes (1 through 1048576), instead of -broadcast")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
@@ -68,8 +73,17 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	if opts.count < 1 {
 		return opts, errors.New("brbnode: -count must be positive")
 	}
-	if opts.count > 1 && opts.broadcast == "" {
-		return opts, errors.New("brbnode: -count greater than 1 requires -broadcast")
+	if opts.interval < 0 {
+		return opts, errors.New("brbnode: -interval must not be negative")
+	}
+	if opts.payloadSize < 0 || opts.payloadSize > 1<<20 {
+		return opts, errors.New("brbnode: -payload-size must be from 0 to 1048576")
+	}
+	if opts.payloadSize > 0 && opts.broadcast != "" {
+		return opts, errors.New("brbnode: use either -broadcast or -payload-size, not both")
+	}
+	if (opts.count > 1 || opts.interval > 0) && opts.broadcast == "" && opts.payloadSize == 0 {
+		return opts, errors.New("brbnode: -count greater than 1 or -interval requires -broadcast or -payload-size")
 	}
 	if strings.TrimSpace(peers) == "" {
 		return opts, errors.New("brbnode: -peers is required")
@@ -145,8 +159,7 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		}
 	}()
 	node, err := brb.NewGorumsNode(runCtx, server, opts.f, func(d brb.Delivery) {
-		logger.Printf("node %d delivered origin=%d sequence=%d value=%q",
-			opts.id, d.ID.Origin, d.ID.Sequence, d.Value)
+		logBroadcast(logger, opts.id, "delivered", d.ID, d.Value)
 	})
 	if err != nil {
 		return err
@@ -154,7 +167,7 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
 	logger.Printf("node %d listening on %s (n=%d f=%d)", opts.id, listener.Addr(), len(opts.peers), opts.f)
-	if opts.broadcast != "" {
+	if opts.broadcast != "" || opts.payloadSize > 0 {
 		// This demo assumes established connections. Wait for the full
 		// membership before asking the adapter to start the broadcast.
 		logger.Printf("node %d waiting for all %d peers before broadcasting", opts.id, len(opts.peers))
@@ -167,12 +180,24 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 			return fmt.Errorf("brbnode: wait for peers: %w", err)
 		}
 		value := []byte(opts.broadcast)
+		if opts.payloadSize > 0 {
+			value = bytes.Repeat([]byte{'x'}, opts.payloadSize)
+		}
 		for i := range opts.count {
+			if i > 0 && opts.interval > 0 {
+				timer := time.NewTimer(opts.interval)
+				select {
+				case <-runCtx.Done():
+					timer.Stop()
+					return nil
+				case <-timer.C:
+				}
+			}
 			sequence := uint64(i) + 1
 			if err := node.Broadcast(sequence, value); err != nil {
 				return fmt.Errorf("brbnode: broadcast sequence %d: %w", sequence, err)
 			}
-			logger.Printf("node %d submitted origin=%d sequence=%d value=%q", opts.id, opts.id, sequence, opts.broadcast)
+			logBroadcast(logger, opts.id, "submitted", brb.BroadcastID{Origin: brb.ProcessID(opts.id), Sequence: sequence}, value)
 		}
 	}
 	select {
@@ -181,4 +206,13 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	case err := <-serveErr:
 		return fmt.Errorf("brbnode: server stopped unexpectedly: %v", err)
 	}
+}
+
+// Keep larger workloads from printing their entire payload on every delivery.
+func logBroadcast(logger *log.Logger, nodeID uint, event string, id brb.BroadcastID, value []byte) {
+	if len(value) > 64 {
+		logger.Printf("node %d %s origin=%d sequence=%d bytes=%d", nodeID, event, id.Origin, id.Sequence, len(value))
+		return
+	}
+	logger.Printf("node %d %s origin=%d sequence=%d value=%q", nodeID, event, id.Origin, id.Sequence, value)
 }
