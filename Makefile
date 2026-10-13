@@ -1,7 +1,12 @@
 GO := go
+.DEFAULT_GOAL := test
+LINT_VERSION := v2.14.0
 PROTO_FILES = $(shell find proto -name '*.proto' -type f)
 
-.PHONY: fmt generate test vet build bench-linux
+.PHONY: fix fmt generate test vet lint build bench-linux provenance
+
+fix:
+	$(GO) fix ./...
 
 fmt:
 	$(GO) fmt ./...
@@ -28,3 +33,13 @@ bench-linux:
 
 build:
 	$(GO) build -o bin/brb ./cmd/brb
+
+lint:
+	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(LINT_VERSION) run
+
+BINARY ?= bin/brb-linux-amd64
+provenance:
+	@git rev-parse HEAD
+	@git status --short
+	@$(GO) version -m "$(BINARY)"
+	@shasum -a 256 "$(BINARY)"
