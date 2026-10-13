@@ -6,25 +6,25 @@ import (
 	"testing"
 )
 
-func TestSendFromDesignatedOriginEmitsOneEcho(t *testing.T) {
-	machine := newTestStateMachine(t)
+func TestProposeFromDesignatedOriginEmitsOneEcho(t *testing.T) {
+	machine := newTestMachine(t)
 	id := BroadcastID{Origin: 1, Sequence: 1}
 
 	if actions := handle(t, machine, 2, PhasePropose, id, "value"); len(actions) != 0 {
-		t.Fatalf("SEND from non-origin emitted %v", actions)
+		t.Fatalf("PROPOSE from non-origin emitted %v", actions)
 	}
 	actions := handle(t, machine, 1, PhasePropose, id, "value")
 	assertSingleAction(t, actions, ActionMulticastEcho, "value")
 	if actions := handle(t, machine, 1, PhasePropose, id, "value"); len(actions) != 0 {
-		t.Fatalf("duplicate SEND emitted %v", actions)
+		t.Fatalf("duplicate PROPOSE emitted %v", actions)
 	}
 	if actions := handle(t, machine, 1, PhasePropose, id, "conflict"); len(actions) != 0 {
-		t.Fatalf("conflicting SEND emitted a second ECHO: %v", actions)
+		t.Fatalf("conflicting PROPOSE emitted a second ECHO: %v", actions)
 	}
 }
 
 func TestEchoThresholdCountsDistinctSenders(t *testing.T) {
-	machine := newTestStateMachine(t)
+	machine := newTestMachine(t)
 	id := BroadcastID{Origin: 1, Sequence: 1}
 
 	for _, from := range []ProcessID{1, 1, 2} {
@@ -37,7 +37,7 @@ func TestEchoThresholdCountsDistinctSenders(t *testing.T) {
 }
 
 func TestReadyAmplificationAndDeliveryThresholds(t *testing.T) {
-	machine := newTestStateMachine(t)
+	machine := newTestMachine(t)
 	id := BroadcastID{Origin: 1, Sequence: 1}
 
 	if actions := handle(t, machine, 1, PhaseReady, id, "value"); len(actions) != 0 {
@@ -53,7 +53,7 @@ func TestReadyAmplificationAndDeliveryThresholds(t *testing.T) {
 }
 
 func TestConflictingValuesDoNotCauseTwoLocalReadyMessages(t *testing.T) {
-	machine := newTestStateMachine(t)
+	machine := newTestMachine(t)
 	id := BroadcastID{Origin: 1, Sequence: 1}
 
 	for _, from := range []ProcessID{1, 2, 3} {
@@ -67,7 +67,7 @@ func TestConflictingValuesDoNotCauseTwoLocalReadyMessages(t *testing.T) {
 }
 
 func TestBroadcastInstancesAreIndependent(t *testing.T) {
-	machine := newTestStateMachine(t)
+	machine := newTestMachine(t)
 	for _, id := range []BroadcastID{{1, 1}, {1, 2}, {2, 1}} {
 		actions := handle(t, machine, id.Origin, PhasePropose, id, "value")
 		assertSingleAction(t, actions, ActionMulticastEcho, "value")
@@ -83,7 +83,7 @@ func TestRejectsInvalidConfigurationAndIdentifiers(t *testing.T) {
 			t.Fatalf("accepted invalid configuration %v", cfg)
 		}
 	}
-	machine := newTestStateMachine(t)
+	machine := newTestMachine(t)
 	for _, msg := range []struct {
 		from  ProcessID
 		phase Phase
@@ -106,7 +106,7 @@ func TestRejectsInvalidConfigurationAndIdentifiers(t *testing.T) {
 	}
 }
 
-func newTestStateMachine(t *testing.T) *StateMachine {
+func newTestMachine(t *testing.T) *StateMachine {
 	t.Helper()
 	machine, err := NewStateMachine(4, 1)
 	if err != nil {
@@ -135,9 +135,9 @@ func assertSingleAction(t *testing.T, actions []Action, wantType ActionType, wan
 }
 
 func TestFirstVoteBoundsStorageAndDeliveryReleasesVotes(t *testing.T) {
-	m := newTestStateMachine(t)
+	m := newTestMachine(t)
 	id := BroadcastID{1, 1}
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		handle(t, m, 1, PhaseEcho, id, fmt.Sprint(i))
 		handle(t, m, 1, PhaseReady, id, fmt.Sprint(i))
 	}
@@ -154,10 +154,10 @@ func TestFirstVoteBoundsStorageAndDeliveryReleasesVotes(t *testing.T) {
 	if actions := handle(t, m, 1, PhasePropose, id, "late"); len(actions) != 0 {
 		t.Fatal("completed instance restarted")
 	}
-	// Wrong-origin SEND must not allocate an instance.
+	// Wrong-origin PROPOSE must not allocate an instance.
 	handle(t, m, 2, PhasePropose, BroadcastID{1, 2}, "invalid")
-	if len(m.instances) != 1 {
-		t.Fatal("invalid SEND allocated state")
+	if len(m.instances) != 0 {
+		t.Fatal("invalid PROPOSE allocated state")
 	}
 }
 
@@ -200,7 +200,7 @@ func TestThresholdsAcrossMembershipSizes(t *testing.T) {
 }
 
 func TestActionsOwnTheirPayload(t *testing.T) {
-	m := newTestStateMachine(t)
+	m := newTestMachine(t)
 	value := []byte("original")
 	actions, err := m.Handle(1, PhasePropose, BroadcastID{1, 1}, value)
 	if err != nil {
@@ -211,7 +211,7 @@ func TestActionsOwnTheirPayload(t *testing.T) {
 }
 
 func TestVotesForDifferentValuesDoNotCombine(t *testing.T) {
-	m := newTestStateMachine(t)
+	m := newTestMachine(t)
 	id := BroadcastID{1, 1}
 	for _, phase := range []Phase{PhaseEcho, PhaseReady} {
 		if actions := handle(t, m, 1, phase, id, "A"); len(actions) != 0 {
@@ -324,7 +324,7 @@ func simulate(t *testing.T, n, f int, correct []ProcessID, queue []event, seed i
 func TestCorrectSenderWithSilentFaultsAndReordering(t *testing.T) {
 	for _, cfg := range [][2]int{{1, 0}, {4, 1}, {6, 1}, {7, 2}} {
 		n, f := cfg[0], cfg[1]
-		for seed := int64(0); seed < 30; seed++ {
+		for seed := range int64(30) {
 			correct := []ProcessID{}
 			queue := []event{}
 			for i := 1; i <= n-f; i++ {
@@ -346,7 +346,7 @@ func TestCorrectSenderWithSilentFaultsAndReordering(t *testing.T) {
 
 func TestEquivocatingOriginAndReadyAmplification(t *testing.T) {
 	id := BroadcastID{1, 1}
-	for seed := int64(0); seed < 30; seed++ {
+	for seed := range int64(30) {
 		// Faulty origin gives A to two correct processes and B to the third.
 		// Its selective ECHO gives node 2 a quorum. Its READY helps node 3
 		// relay A. Node 4 must eventually deliver A despite having echoed B.
