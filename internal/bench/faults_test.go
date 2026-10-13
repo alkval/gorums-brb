@@ -12,11 +12,45 @@ import (
 	"time"
 
 	"github.com/alkval/gorums-brb/internal/brb"
+	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchkit"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+type observedFault struct {
+	receiver uint32
+	phase    string
+	id       brb.BroadcastID
+	value    string
+}
+
+// Observe the messages at the receiving RPC handlers, before the real replica
+// processes them. This distinguishes wrong ECHOs from a merely silent peer.
+type observingReplica struct {
+	*brb.Replica
+	id       uint32
+	observed chan<- observedFault
+}
+
+func (r observingReplica) record(phase string, msg *brbv1.PhaseMessage) {
+	if msg.GetSender() == 4 {
+		r.observed <- observedFault{r.id, phase,
+			brb.BroadcastID{Origin: brb.ProcessID(msg.GetId().GetOrigin()), Sequence: msg.GetId().GetSequence()},
+			string(msg.GetValue())}
+	}
+}
+
+func (r observingReplica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
+	r.record("propose", msg)
+	r.Replica.Propose(ctx, msg)
+}
+
+func (r observingReplica) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
+	r.record("echo", msg)
+	r.Replica.Echo(ctx, msg)
+}
 
 func TestNetworkFaultScenarios(t *testing.T) {
 	for _, mode := range []string{"silent", "wrong-echo", "equivocate"} {
@@ -31,6 +65,7 @@ func TestNetworkFaultScenarios(t *testing.T) {
 			}
 			defer func() { cancel(); stop() }()
 			nodes := make([]*brb.Replica, 4)
+			observed := make(chan observedFault, 16)
 			deliveries := make([]chan brb.Delivery, 4)
 			for i, server := range systems {
 				deliveries[i] = make(chan brb.Delivery, 4)
@@ -38,6 +73,7 @@ func TestNetworkFaultScenarios(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				brbv1.RegisterBrachaServer(server, observingReplica{nodes[i], uint32(i + 1), observed})
 			}
 			registerFault(ctx, systems[3], mode)
 			for _, server := range systems {
@@ -56,6 +92,29 @@ func TestNetworkFaultScenarios(t *testing.T) {
 				}
 			} else if err := nodes[0].Broadcast(1, []byte(value)); err != nil {
 				t.Fatal(err)
+			}
+			if mode != "silent" {
+				phase := "echo"
+				want := map[uint32]string{1: "iello", 2: "iello", 3: "iello"}
+				if mode == "equivocate" {
+					phase = "propose"
+					want = map[uint32]string{1: "A", 2: "B", 3: "A"}
+				}
+				for len(want) > 0 {
+					select {
+					case event := <-observed:
+						if event.phase != phase {
+							continue
+						}
+						expected, ok := want[event.receiver]
+						if !ok || event.value != expected || event.id != (brb.BroadcastID{Origin: origin, Sequence: 1}) {
+							t.Fatalf("unexpected faulty message: %+v, remaining expectations: %v", event, want)
+						}
+						delete(want, event.receiver)
+					case <-ctx.Done():
+						t.Fatalf("%s fault was not observed at replicas %v", mode, want)
+					}
+				}
 			}
 			for i := range 3 {
 				select {
