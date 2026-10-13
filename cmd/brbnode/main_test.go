@@ -391,7 +391,7 @@ func TestRunGeneratedPayloadContents(t *testing.T) {
 				server.Stop()
 			})
 			deliveries := make(chan brb.Delivery, 2)
-			if _, err := brb.NewGorumsNode(ctx, server, 0, func(d brb.Delivery) { deliveries <- d }); err != nil {
+			if _, err := brb.NewReplica(ctx, server, 0, func(d brb.Delivery) { deliveries <- d }); err != nil {
 				t.Fatal(err)
 			}
 			serveErr := make(chan error, 1)

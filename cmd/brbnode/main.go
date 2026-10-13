@@ -119,7 +119,7 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	if opts.id == 0 || opts.id > uint(len(opts.peers)) {
 		return opts, fmt.Errorf("brbnode: -id must be from 1 to %d", len(opts.peers))
 	}
-	if _, err := brb.NewMachine(len(opts.peers), opts.f); err != nil {
+	if _, err := brb.NewStateMachine(len(opts.peers), opts.f); err != nil {
 		return opts, err
 	}
 	return opts, nil
@@ -158,7 +158,7 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 			logger.Printf("node %d stopping", opts.id)
 		}
 	}()
-	node, err := brb.NewGorumsNode(runCtx, server, opts.f, func(d brb.Delivery) {
+	node, err := brb.NewReplica(runCtx, server, opts.f, func(d brb.Delivery) {
 		logBroadcast(logger, opts.id, "delivered", d.ID, d.Value)
 	})
 	if err != nil {

@@ -208,8 +208,8 @@ const file_proto_brb_v1_brb_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\v2\x13.brb.v1.BroadcastIDR\x02id\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12\x16\n" +
 	"\x06sender\x18\x03 \x01(\rR\x06sender2\xc0\x01\n" +
-	"\tBroadcast\x12:\n" +
-	"\x04Send\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12:\n" +
+	"\x06Bracha\x12=\n" +
+	"\aPropose\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12:\n" +
 	"\x04Echo\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12;\n" +
 	"\x05Ready\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01B6Z/github.com/alkval/gorums-brb/proto/brb/v1;brbv1\x92\x03\x02\b\x02b\beditionsp\xe9\a"
 
@@ -221,12 +221,12 @@ var file_proto_brb_v1_brb_proto_goTypes = []any{
 }
 var file_proto_brb_v1_brb_proto_depIdxs = []int32{
 	0, // 0: brb.v1.PhaseMessage.id:type_name -> brb.v1.BroadcastID
-	1, // 1: brb.v1.Broadcast.Send:input_type -> brb.v1.PhaseMessage
-	1, // 2: brb.v1.Broadcast.Echo:input_type -> brb.v1.PhaseMessage
-	1, // 3: brb.v1.Broadcast.Ready:input_type -> brb.v1.PhaseMessage
-	2, // 4: brb.v1.Broadcast.Send:output_type -> google.protobuf.Empty
-	2, // 5: brb.v1.Broadcast.Echo:output_type -> google.protobuf.Empty
-	2, // 6: brb.v1.Broadcast.Ready:output_type -> google.protobuf.Empty
+	1, // 1: brb.v1.Bracha.Propose:input_type -> brb.v1.PhaseMessage
+	1, // 2: brb.v1.Bracha.Echo:input_type -> brb.v1.PhaseMessage
+	1, // 3: brb.v1.Bracha.Ready:input_type -> brb.v1.PhaseMessage
+	2, // 4: brb.v1.Bracha.Propose:output_type -> google.protobuf.Empty
+	2, // 5: brb.v1.Bracha.Echo:output_type -> google.protobuf.Empty
+	2, // 6: brb.v1.Bracha.Ready:output_type -> google.protobuf.Empty
 	4, // [4:7] is the sub-list for method output_type
 	1, // [1:4] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name

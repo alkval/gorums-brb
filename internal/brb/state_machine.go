@@ -19,7 +19,7 @@ type BroadcastID struct {
 type Phase uint8
 
 const (
-	PhaseSend Phase = iota + 1
+	PhasePropose Phase = iota + 1
 	PhaseEcho
 	PhaseReady
 )
@@ -40,10 +40,10 @@ type Action struct {
 	Value []byte
 }
 
-// Machine owns the state for every broadcast instance observed by one process.
+// StateMachine owns the state for every broadcast instance observed by one process.
 // It is safe for concurrent use. Completed IDs remain until the machine is
 // discarded, so delayed messages cannot cause a second delivery.
-type Machine struct {
+type StateMachine struct {
 	mu        sync.Mutex
 	n         int
 	f         int
@@ -80,9 +80,9 @@ func (v *votes) add(from ProcessID, value []byte) int {
 	return v.counts[key]
 }
 
-// NewMachine constructs a state machine for a fixed membership whose process
+// NewStateMachine constructs a state machine for a fixed membership whose process
 // IDs are 1 through n. The n > 3f constraint is the provisional textbook model.
-func NewMachine(n, f int) (*Machine, error) {
+func NewStateMachine(n, f int) (*StateMachine, error) {
 	if n < 1 {
 		return nil, errors.New("brb: n must be positive")
 	}
@@ -95,7 +95,7 @@ func NewMachine(n, f int) (*Machine, error) {
 	if uint64(n) > uint64(^uint32(0)) {
 		return nil, errors.New("brb: membership exceeds process ID range")
 	}
-	return &Machine{
+	return &StateMachine{
 		n:         n,
 		f:         f,
 		instances: make(map[BroadcastID]*instance),
@@ -105,7 +105,7 @@ func NewMachine(n, f int) (*Machine, error) {
 // Handle records one protocol message and returns the actions newly enabled by
 // it. Messages are counted by distinct logical sender. The current prototype
 // expects the transport adapter to provide that sender identity.
-func (m *Machine) Handle(from ProcessID, phase Phase, id BroadcastID, value []byte) ([]Action, error) {
+func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value []byte) ([]Action, error) {
 	if from == 0 || uint64(from) > uint64(m.n) {
 		return nil, fmt.Errorf("brb: sender ID %d is outside membership 1..%d", from, m.n)
 	}
@@ -115,10 +115,10 @@ func (m *Machine) Handle(from ProcessID, phase Phase, id BroadcastID, value []by
 	if id.Sequence == 0 {
 		return nil, errors.New("brb: broadcast sequence must be positive")
 	}
-	if phase < PhaseSend || phase > PhaseReady {
+	if phase < PhasePropose || phase > PhaseReady {
 		return nil, fmt.Errorf("brb: unknown phase %d", phase)
 	}
-	if phase == PhaseSend && from != id.Origin {
+	if phase == PhasePropose && from != id.Origin {
 		return nil, nil
 	}
 
@@ -136,7 +136,7 @@ func (m *Machine) Handle(from ProcessID, phase Phase, id BroadcastID, value []by
 
 	var actions []Action
 	switch phase {
-	case PhaseSend:
+	case PhasePropose:
 		if !state.echoSent {
 			state.echoSent = true
 			actions = append(actions, newAction(ActionMulticastEcho, id, value))
