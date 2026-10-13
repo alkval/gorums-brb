@@ -45,8 +45,24 @@ Use `-stats-mode hdr` for long runs. No separate warm-up phase is implemented.
 Capture `make provenance BINARY=bin/brb-linux-amd64` beside each sweep manifest.
 It prints the checkout state, binary build information and SHA-256.
 
-Use `-fail-fast` for unavailable-peer diagnostics. Correct peers must already be
-connected, and failed sends to correct peers are not repaired.
+## Controlled faults
+
+All members must complete startup before fault timing begins. Use the same
+ordered membership and fault settings on all nodes. Fault modes enable
+`-fail-fast`, which reports unavailable peers promptly. Correct-peer links must
+remain healthy. Choose one faulty replica with `-fault-node` (default: last ID).
+
+- `-fault-kill-after=2s` abruptly exits that replica two seconds after startup.
+- `-fault=silent` receives messages but sends no protocol votes.
+- `-fault=wrong-echo` echoes a different value under its own ID.
+- `-fault=equivocate` proposes A and B to different replicas for one instance.
+
+Pass these in sweep's `-extra-args`, alongside `-mode=bench`. Keep the injected
+count within f. Faulty replicas produce no measurement file. Inspect survivor
+reports and missing files together. A missing completion signal is recorded,
+but does not itself prove a crash. Survivor success only establishes local
+completion. Benchkit profiling, rate ramps, per-call timeouts, buffer-size sweeps
+and stream deduplication are not supported by this command.
 
 Startup round-trip probes and a barrier precede fail-fast measurement. Startup
 allows 30 seconds plus one second per replica. Completion allows 10 seconds plus
