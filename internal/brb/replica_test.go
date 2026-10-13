@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -183,5 +184,42 @@ func TestPhaseMessageOwnsPayload(t *testing.T) {
 	value[0] = 'X'
 	if msg.GetSender() != 3 || msg.GetId().GetOrigin() != 1 || msg.GetId().GetSequence() != 2 || string(msg.GetValue()) != "original" {
 		t.Fatal("phase message lost its identifier or shared the input payload")
+	}
+}
+
+func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
+	nodes, _, deliveries := localNodes(t, 2, 0)
+	node := nodes[0]
+	id := BroadcastID{Origin: 2, Sequence: 1}
+	value := []byte("hello")
+	actions, err := node.machine.Handle(2, PhaseReady, id, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(actions) != 2 || actions[0].Type != ActionMulticastReady || actions[1].Type != ActionDeliver {
+		t.Fatalf("expected READY and delivery actions, got %+v", actions)
+	}
+
+	// Cancel after the transition has enabled delivery, forcing the outbound
+	// READY to fail without needing a network timeout or a mock transport.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	node.ctx = ctx
+	if err := brbv1.Ready(node.config.Context(ctx), phaseMessage(node.self, id, value)).Send(); err == nil {
+		t.Fatal("expected multicast to fail with a cancelled context")
+	}
+	node.performActions(actions)
+	select {
+	case delivery := <-deliveries[0]:
+		if delivery.ID != id || string(delivery.Value) != string(value) {
+			t.Fatalf("unexpected delivery: %+v", delivery)
+		}
+	default:
+		t.Fatal("failed READY multicast suppressed local delivery")
+	}
+
+	// The delivered instance must still ignore a duplicate READY.
+	if actions, err := node.machine.Handle(2, PhaseReady, id, value); err != nil || len(actions) != 0 {
+		t.Fatalf("duplicate READY returned actions=%+v err=%v", actions, err)
 	}
 }
