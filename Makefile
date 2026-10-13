@@ -1,7 +1,7 @@
 GO := go
 PROTO_FILES = $(shell find proto -name '*.proto' -type f)
 
-.PHONY: fmt generate test vet
+.PHONY: fmt generate test vet build bench-linux
 
 fmt:
 	$(GO) fmt ./...
@@ -22,3 +22,9 @@ test:
 
 vet:
 	$(GO) vet ./...
+
+bench-linux:
+	GOOS=linux GOARCH=amd64 $(GO) build -o bin/brb-linux-amd64 ./cmd/brb
+
+build:
+	$(GO) build -o bin/brb ./cmd/brb
