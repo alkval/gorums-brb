@@ -108,7 +108,12 @@ func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.Phase
 		log.Printf("brb node %d: %v", n.self, err)
 		return
 	}
+	n.performActions(actions)
+}
+
+func (n *Replica) performActions(actions []Action) {
 	for _, action := range actions {
+		var err error
 		switch action.Type {
 		case ActionMulticastEcho:
 			err = brbv1.Echo(n.config.Context(n.ctx), phaseMessage(n.self, action.ID, action.Value)).Send()
@@ -120,10 +125,8 @@ func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.Phase
 			}
 		}
 		if err != nil {
-			// Log the failed multicast. This prototype cannot recover it and
-			// does not stop the whole process automatically.
-			log.Printf("brb node %d: multicast for %v failed: %v", n.self, id, err)
-			return
+			// A failed multicast must not skip an already enabled delivery.
+			log.Printf("brb node %d: multicast for %v failed: %v", n.self, action.ID, err)
 		}
 	}
 }
