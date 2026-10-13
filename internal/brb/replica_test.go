@@ -14,13 +14,14 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func localNodes(t *testing.T, count, f int) ([]*Replica, []*gorums.Server, []chan Delivery) {
+func localNodes(t *testing.T, count, f int, localOpts ...gorums.LocalServerOption) ([]*Replica, []*gorums.Server, []chan Delivery) {
 	t.Helper()
 	opts := gorums.WithGRPCDialOptions(
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 	)
-	systems, stop, err := gorums.NewLocalServers(count, gorums.WithLocalDialOptions(opts))
+	localOpts = append([]gorums.LocalServerOption{gorums.WithLocalDialOptions(opts)}, localOpts...)
+	systems, stop, err := gorums.NewLocalServers(count, localOpts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,8 +40,7 @@ func localNodes(t *testing.T, count, f int) ([]*Replica, []*gorums.Server, []cha
 	return nodes, systems, deliveries
 }
 
-// Establish all connections before testing protocol messages. This prototype
-// does not provide transport recovery for unavailable peers.
+// Establish connections between the servers participating in this test.
 func serve(t *testing.T, systems []*gorums.Server) {
 	t.Helper()
 	for _, sys := range systems {
@@ -82,19 +82,136 @@ func TestGorumsFourNodesDeliver(t *testing.T) {
 	}
 }
 
+// This peer receives all three phases but never sends any BRB messages.
+type silentBroadcast struct{}
+
+func (silentBroadcast) Propose(gorums.ServerContext, *brbv1.PhaseMessage) {}
+func (silentBroadcast) Echo(gorums.ServerContext, *brbv1.PhaseMessage)    {}
+func (silentBroadcast) Ready(gorums.ServerContext, *brbv1.PhaseMessage)   {}
+
+func TestGorumsFourNodesWithSilentPeer(t *testing.T) {
+	const lateValue = "late conflicting value"
+	// Observe when injected messages finish processing so the duplicate check
+	// does not depend on a sleep or on multicast returning before its handlers.
+	handled := make(chan struct{}, 12)
+	observe := gorums.WithServerInterceptors(func(ctx gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
+		out, err := next(ctx, msg)
+		if phase, ok := msg.Proto.(*brbv1.PhaseMessage); ok && string(phase.GetValue()) == lateValue {
+			handled <- struct{}{}
+		}
+		return out, err
+	})
+	nodes, systems, deliveries := localNodes(t, 4, 1, gorums.WithLocalServerOptions(observe))
+	// Replace node 4's BRB handlers before starting any servers. Its Gorums
+	// connections remain active, but it contributes no ECHO or READY votes.
+	brbv1.RegisterBrachaServer(systems[3], silentBroadcast{})
+	serve(t, systems)
+
+	id := BroadcastID{Origin: 1, Sequence: 1}
+	if err := nodes[0].Broadcast(id.Sequence, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 3 {
+		awaitDelivery(t, deliveries[i], id, "hello")
+		t.Logf("node %d delivered hello without node 4's votes", i+1)
+	}
+
+	// Re-send each phase for the delivered ID, even with a different value.
+	// These calls go through Gorums rather than directly into the state machine.
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cc := systems[0].PeerConfig().Context(ctx)
+	msg := phaseMessage(1, id, []byte(lateValue))
+	if err := brbv1.Propose(cc, msg).Send(); err != nil {
+		t.Fatal(err)
+	}
+	if err := brbv1.Echo(cc, msg).Send(); err != nil {
+		t.Fatal(err)
+	}
+	if err := brbv1.Ready(cc, msg).Send(); err != nil {
+		t.Fatal(err)
+	}
+	for range 12 { // three phases handled at each of the four servers
+		select {
+		case <-handled:
+		case <-ctx.Done():
+			t.Fatal("late messages were not handled before the deadline")
+		}
+	}
+	for i, ch := range deliveries {
+		select {
+		case d := <-ch:
+			t.Fatalf("node %d produced an extra delivery: %+v", i+1, d)
+		default:
+		}
+	}
+}
+
+func TestGorumsDeliversWithUnavailablePeer(t *testing.T) {
+	for _, crash := range []bool{false, true} {
+		name := "never-starts"
+		if crash {
+			name = "crashes-after-delivery"
+		}
+		t.Run(name, func(t *testing.T) {
+			// Correct-peer connections are established before this diagnostic
+			// uses fail-fast sends to the unavailable fourth peer.
+			nodes, systems, deliveries := localNodes(t, 4, 1, gorums.WithLocalDialOptions(
+				gorums.WithGRPCDialOptions(grpc.WithDefaultCallOptions(grpc.WaitForReady(false)))))
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			for _, node := range nodes {
+				node.ctx = ctx // set before starting handlers
+			}
+			sequence := uint64(1)
+			if crash {
+				serve(t, systems)
+				if err := nodes[0].Broadcast(sequence, []byte("before crash")); err != nil {
+					t.Fatal(err)
+				}
+				for _, ch := range deliveries {
+					awaitDelivery(t, ch, BroadcastID{1, sequence}, "before crash")
+				}
+				sequence++
+			}
+			systems[3].Stop()
+			if !crash {
+				serve(t, systems[:3])
+			}
+			for _, sys := range systems[:3] {
+				if err := sys.WaitForPeers(ctx, func(c gorums.Config) bool { return len(c) == 3 }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sent := make(chan error, 1)
+			go func() { sent <- nodes[0].Broadcast(sequence, []byte("survivors")) }()
+			for i, ch := range deliveries[:3] {
+				awaitDelivery(t, ch, BroadcastID{1, sequence}, "survivors")
+				t.Logf("node %d delivered with node 4 unavailable", i+1)
+			}
+			select {
+			case err := <-sent:
+				if !errors.Is(err, gorums.ErrSendFailure) {
+					t.Fatalf("got %v, want a reported send failure for the unavailable peer", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("all survivors delivered, but Broadcast is still waiting for node 4")
+			}
+		})
+	}
+}
+
 func TestGorumsConcurrentBroadcastsAndSequenceReuse(t *testing.T) {
 	nodes, systems, deliveries := localNodes(t, 4, 1)
 	serve(t, systems)
 	var wg sync.WaitGroup
 	var accepted atomic.Int32
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 10 {
+		wg.Go(func() {
 			if nodes[0].Broadcast(1, []byte("one")) == nil {
 				accepted.Add(1)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if accepted.Load() != 1 {
@@ -104,13 +221,11 @@ func TestGorumsConcurrentBroadcastsAndSequenceReuse(t *testing.T) {
 		awaitDelivery(t, ch, BroadcastID{1, 1}, "one")
 	}
 	for i, node := range nodes {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			if err := node.Broadcast(2, []byte{byte(i)}); err != nil {
 				t.Error(err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	for _, ch := range deliveries {
@@ -135,6 +250,7 @@ func TestGorumsRejectsMissingConfiguration(t *testing.T) {
 	}
 	sys := gorums.NewServer()
 	defer sys.Stop()
+	//nolint:staticcheck // Deliberately exercise rejection of a nil context.
 	if _, err := NewReplica(nil, sys, 0, nil); err == nil {
 		t.Fatal("accepted nil context")
 	}
@@ -163,7 +279,7 @@ func TestBroadcastRejectsZeroSequenceAndCancelledContext(t *testing.T) {
 	if err := node.Broadcast(1, []byte("value")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v, want context cancellation", err)
 	}
-	if len(node.started) != 0 {
+	if len(node.machine.instances) != 0 {
 		t.Fatal("invalid broadcast reserved a sequence")
 	}
 }
@@ -175,16 +291,6 @@ func TestGorumsDeliversEmptyValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitDelivery(t, deliveries[0], BroadcastID{1, 1}, "")
-}
-
-func TestPhaseMessageOwnsPayload(t *testing.T) {
-	value := []byte("original")
-	id := BroadcastID{1, 2}
-	msg := phaseMessage(3, id, value)
-	value[0] = 'X'
-	if msg.GetSender() != 3 || msg.GetId().GetOrigin() != 1 || msg.GetId().GetSequence() != 2 || string(msg.GetValue()) != "original" {
-		t.Fatal("phase message lost its identifier or shared the input payload")
-	}
 }
 
 func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
@@ -221,5 +327,15 @@ func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
 	// The delivered instance must still ignore a duplicate READY.
 	if actions, err := node.machine.Handle(2, PhaseReady, id, value); err != nil || len(actions) != 0 {
 		t.Fatalf("duplicate READY returned actions=%+v err=%v", actions, err)
+	}
+}
+
+func TestPhaseMessageOwnsPayload(t *testing.T) {
+	value := []byte("original")
+	id := BroadcastID{1, 2}
+	msg := phaseMessage(3, id, value)
+	value[0] = 'X'
+	if msg.GetSender() != 3 || msg.GetId().GetOrigin() != 1 || msg.GetId().GetSequence() != 2 || string(msg.GetValue()) != "original" {
+		t.Fatal("phase message lost its identifier or shared the input payload")
 	}
 }

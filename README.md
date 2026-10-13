@@ -33,12 +33,12 @@ confirmation.
   from this source-code repository.
 - The source repository is public; thesis writing remains private in Overleaf.
 
-The prototype retains completed broadcast IDs and locally used sequence numbers
-until shutdown. This prevents reuse and duplicate delivery, but memory grows
-with the number of instances. Failed ECHO or READY sends are logged, not retried,
-and do not automatically stop the program. A send failure invalidates a run's
-working-connection assumption. These are limits of the prototype, not recovery
-features.
+Each origin has a 1024-sequence receive window and a contiguous delivered prefix.
+Old messages are ignored. Messages beyond the window are rejected without storing
+them. Local submissions wait when their window is full. Gaps or a replica falling
+more than one window behind can stop progress. Values are limited to 1 MiB.
+Restart the entire group between runs. Failed ECHO and READY sends are logged
+and are not repaired.
 
 ## Development
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"sync"
 
 	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
@@ -19,13 +18,11 @@ type Delivery struct {
 // Replica connects the state machine to Gorums multicast.
 // Sender IDs are trusted for now. Authentication is deliberately deferred.
 type Replica struct {
-	self      ProcessID
-	machine   *StateMachine
-	config    gorums.Config
-	ctx       context.Context // lifetime of the experiment, not one incoming request
-	onDeliver func(Delivery)
-	mu        sync.Mutex // protects sequence reservations
-	started   map[uint64]bool
+	self           ProcessID
+	machine        *StateMachine
+	config         gorums.Config
+	ctx            context.Context // lifetime of the experiment, not one incoming request
+	onDeliver      func(Delivery)
 }
 
 // NewReplica registers the adapter before server.Serve. All processes must
@@ -52,30 +49,30 @@ func NewReplica(ctx context.Context, server *gorums.Server, f int, onDeliver fun
 	}
 	node := &Replica{
 		self: self, machine: machine, config: config, ctx: ctx,
-		onDeliver: onDeliver, started: make(map[uint64]bool),
+		onDeliver: onDeliver,
 	}
 	brbv1.RegisterBrachaServer(server, node)
 	return node, nil
 }
 
-// Broadcast sends SEND to every process, including this one. A nil result
+// Broadcast sends PROPOSE to every process, including this one. A nil result
 // means sent, not delivered. A sequence cannot be reused, even after a send
-// error, since some recipients may already have received the value.
+// error, since some recipients may already have received the value. A send
+// failure alone does not establish whether the correct peers can deliver.
 func (n *Replica) Broadcast(sequence uint64, value []byte) error {
 	if sequence == 0 {
 		return errors.New("brb: sequence must be positive")
 	}
+	if len(value) > MaxPayloadSize {
+		return errors.New("brb: payload exceeds 1 MiB")
+	}
 	if err := n.ctx.Err(); err != nil {
 		return err
 	}
-	n.mu.Lock()
-	if n.started[sequence] {
-		n.mu.Unlock()
-		return errors.New("brb: sequence already used")
-	}
-	n.started[sequence] = true
-	n.mu.Unlock()
 	id := BroadcastID{Origin: n.self, Sequence: sequence}
+	if err := n.machine.reserve(n.ctx, id); err != nil {
+		return err
+	}
 	return brbv1.Propose(n.config.Context(n.ctx), phaseMessage(n.self, id, value)).Send()
 }
 

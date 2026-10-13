@@ -1,10 +1,20 @@
+// Package brb implements Bracha's deterministic state transitions and transport.
 package brb
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 )
+
+// WindowSize bounds retained instances per origin. All replicas use this value.
+const WindowSize uint64 = 1024
+
+// MaxPayloadSize bounds the value retained for an individual vote.
+const MaxPayloadSize = 1 << 20
+
+var ErrOutsideWindow = errors.New("brb: sequence is outside the receive window")
 
 // ProcessID identifies one process in the fixed membership.
 type ProcessID uint32
@@ -40,17 +50,19 @@ type Action struct {
 	Value []byte
 }
 
-// StateMachine owns the state for every broadcast instance observed by one process.
-// It is safe for concurrent use. Completed IDs remain until the machine is
-// discarded, so delayed messages cannot cause a second delivery.
+// StateMachine owns at most WindowSize instances per origin. A contiguous
+// delivered prefix prevents duplicate delivery without retaining every ID.
 type StateMachine struct {
 	mu        sync.Mutex
 	n         int
 	f         int
 	instances map[BroadcastID]*instance
+	delivered map[ProcessID]uint64
+	changed   chan struct{}
 }
 
 type instance struct {
+	started   bool
 	echoSent  bool
 	readySent bool
 	delivered bool
@@ -99,6 +111,8 @@ func NewStateMachine(n, f int) (*StateMachine, error) {
 		n:         n,
 		f:         f,
 		instances: make(map[BroadcastID]*instance),
+		delivered: make(map[ProcessID]uint64),
+		changed:   make(chan struct{}),
 	}, nil
 }
 
@@ -115,6 +129,9 @@ func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value
 	if id.Sequence == 0 {
 		return nil, errors.New("brb: broadcast sequence must be positive")
 	}
+	if len(value) > MaxPayloadSize {
+		return nil, errors.New("brb: payload exceeds 1 MiB")
+	}
 	if phase < PhasePropose || phase > PhaseReady {
 		return nil, fmt.Errorf("brb: unknown phase %d", phase)
 	}
@@ -124,6 +141,12 @@ func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if id.Sequence <= m.delivered[id.Origin] {
+		return nil, nil
+	}
+	if id.Sequence-m.delivered[id.Origin] > WindowSize {
+		return nil, ErrOutsideWindow
+	}
 
 	state := m.instances[id]
 	if state == nil {
@@ -154,12 +177,68 @@ func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value
 			actions = append(actions, newAction(ActionMulticastReady, id, value))
 		}
 		if readyCount > 2*m.f {
-			// Retain a tombstone so delayed messages cannot restart this instance.
+			// Retain out-of-order deliveries until every earlier ID delivered.
 			*state = instance{delivered: true}
+			m.compact(id.Origin)
 			actions = append(actions, newAction(ActionDeliver, id, value))
 		}
 	}
 	return actions, nil
+}
+
+// reserve blocks local submissions at the window boundary. It reserves the ID
+// under the same lock as delivery, so concurrent calls cannot reuse a sequence.
+func (m *StateMachine) reserve(ctx context.Context, id BroadcastID) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		m.mu.Lock()
+		if id.Sequence <= m.delivered[id.Origin] {
+			m.mu.Unlock()
+			return errors.New("brb: sequence already delivered")
+		}
+		if id.Sequence-m.delivered[id.Origin] <= WindowSize {
+			state := m.instances[id]
+			if state == nil {
+				state = &instance{}
+				m.instances[id] = state
+			}
+			if state.started || state.delivered {
+				m.mu.Unlock()
+				return errors.New("brb: sequence already used")
+			}
+			state.started = true
+			m.mu.Unlock()
+			return nil
+		}
+		changed := m.changed
+		m.mu.Unlock()
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (m *StateMachine) compact(origin ProcessID) {
+	before := m.delivered[origin]
+	prefix := before
+	for prefix < ^uint64(0) {
+		id := BroadcastID{origin, prefix + 1}
+		state := m.instances[id]
+		if state == nil || !state.delivered {
+			break
+		}
+		delete(m.instances, id)
+		prefix++
+	}
+	if prefix != before {
+		m.delivered[origin] = prefix
+		close(m.changed)
+		m.changed = make(chan struct{})
+	}
 }
 
 func newAction(actionType ActionType, id BroadcastID, value []byte) Action {
