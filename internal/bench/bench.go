@@ -29,6 +29,8 @@ type Options struct {
 	f         int
 	selfID    uint32
 	failFast  bool
+	fault     string
+	faultNode uint
 }
 
 func ParseOptions(args []string, output io.Writer) (Options, error) {
@@ -37,6 +39,8 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	opts := Options{StandardFlags: benchkit.RegisterFlags(fs)}
 	fs.IntVar(&opts.f, "f", -1, "fault bound (default: (n-1)/3)")
 	fs.BoolVar(&opts.failFast, "fail-fast", false, "report unavailable-peer sends promptly for fault diagnostics; correct peers must already be connected")
+	fs.StringVar(&opts.fault, "fault", "none", "faulty replica behavior: none, silent, equivocate, wrong-echo")
+	fs.UintVar(&opts.faultNode, "fault-node", 0, "faulty replica ID (default: last replica)")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -51,7 +55,7 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	}
 	// Do not silently accept features this first benchmark does not implement.
 	if opts.StreamMode != "dual" || opts.RateStep != 0 || opts.RateStepMax != 0 ||
-		opts.CallTimeout != 0 || opts.FaultKillAfter != 0 || opts.CPUProfile != "" || opts.MemProfile != "" || opts.Trace != "" {
+		opts.CallTimeout != 0 || opts.CPUProfile != "" || opts.MemProfile != "" || opts.Trace != "" {
 		return opts, errors.New("brb bench: dedup, rate ramps, call timeouts, and profiling are not supported")
 	}
 	self, err := cluster.Peers([]string{opts.Self}, false)
@@ -74,6 +78,26 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	if opts.f, err = cluster.FaultBound(len(opts.Remotes), opts.f); err != nil {
 		return opts, err
 	}
+	if opts.faultNode == 0 {
+		opts.faultNode = uint(len(opts.Remotes))
+	}
+	if opts.faultNode > uint(len(opts.Remotes)) {
+		return opts, errors.New("brb: fault node is outside membership")
+	}
+	switch opts.fault {
+	case "none", "silent", "equivocate", "wrong-echo":
+	default:
+		return opts, errors.New("brb: unknown fault behavior")
+	}
+	if opts.FaultKillAfter < 0 || (opts.FaultKillAfter > 0 && opts.FaultKillAfter >= opts.Duration) {
+		return opts, errors.New("brb: fault-kill-after must be positive and shorter than the workload")
+	}
+	if opts.FaultKillAfter > 0 || opts.fault != "none" {
+		if opts.f == 0 {
+			return opts, errors.New("brb: injected faults require f >= 1")
+		}
+		opts.failFast = true
+	}
 	return opts, nil
 }
 
@@ -90,6 +114,13 @@ func Run(parent context.Context, opts Options) error {
 	if err := awaitPeers(ctx, node, opts); err != nil {
 		return err
 	}
+	if uint(opts.selfID) == opts.faultNode && opts.FaultKillAfter > 0 {
+		timer := benchkit.ArmFaultInjection(opts.FaultKillAfter)
+		defer timer.Stop()
+	}
+	if uint(opts.selfID) == opts.faultNode && opts.fault != "none" {
+		return runFault(ctx, node, opts)
+	}
 	results, failures, err := measure(ctx, cancel, node, opts, tracker)
 	if err != nil {
 		return err
@@ -104,6 +135,9 @@ func Run(parent context.Context, opts Options) error {
 	label := fmt.Sprintf("node %d f=%d", opts.selfID, opts.f)
 	if opts.failFast {
 		label += " fail-fast=true"
+	}
+	if opts.fault != "none" || opts.FaultKillAfter > 0 {
+		label += fmt.Sprintf(" fault=%s fault-node=%d kill-after=%s", opts.fault, opts.faultNode, opts.FaultKillAfter)
 	}
 	if failures != 0 || len(missing) != 0 {
 		label += fmt.Sprintf(" initial-send-failures=%d missing-done=%v", failures, missing)
@@ -171,6 +205,9 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 		_ = listener.Close()
 		server.Stop()
 		return nil, err
+	}
+	if uint(opts.selfID) == opts.faultNode && opts.fault != "none" {
+		registerFault(ctx, server, opts.fault)
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
