@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func localNodes(t *testing.T, count, f int) ([]*GorumsNode, []*gorums.Server, []chan Delivery) {
+func localNodes(t *testing.T, count, f int) ([]*Replica, []*gorums.Server, []chan Delivery) {
 	t.Helper()
 	opts := gorums.WithGRPCDialOptions(
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
@@ -26,11 +26,11 @@ func localNodes(t *testing.T, count, f int) ([]*GorumsNode, []*gorums.Server, []
 	t.Cleanup(stop)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	t.Cleanup(cancel)
-	nodes := make([]*GorumsNode, count)
+	nodes := make([]*Replica, count)
 	deliveries := make([]chan Delivery, count)
 	for i, sys := range systems {
 		deliveries[i] = make(chan Delivery, 100)
-		nodes[i], err = NewGorumsNode(ctx, sys, f, func(d Delivery) { deliveries[i] <- d })
+		nodes[i], err = NewReplica(ctx, sys, f, func(d Delivery) { deliveries[i] <- d })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -129,15 +129,15 @@ func TestGorumsConcurrentBroadcastsAndSequenceReuse(t *testing.T) {
 }
 
 func TestGorumsRejectsMissingConfiguration(t *testing.T) {
-	if _, err := NewGorumsNode(t.Context(), nil, 1, nil); err == nil {
+	if _, err := NewReplica(t.Context(), nil, 1, nil); err == nil {
 		t.Fatal("accepted nil server")
 	}
 	sys := gorums.NewServer()
 	defer sys.Stop()
-	if _, err := NewGorumsNode(nil, sys, 0, nil); err == nil {
+	if _, err := NewReplica(nil, sys, 0, nil); err == nil {
 		t.Fatal("accepted nil context")
 	}
-	if _, err := NewGorumsNode(t.Context(), sys, 0, nil); err == nil {
+	if _, err := NewReplica(t.Context(), sys, 0, nil); err == nil {
 		t.Fatal("accepted absent configuration")
 	}
 }
@@ -151,7 +151,7 @@ func TestBroadcastRejectsZeroSequenceAndCancelledContext(t *testing.T) {
 	defer stop()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	node, err := NewGorumsNode(ctx, systems[0], 0, nil)
+	node, err := NewReplica(ctx, systems[0], 0, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

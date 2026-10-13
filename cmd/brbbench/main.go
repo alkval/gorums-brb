@@ -93,7 +93,7 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	if opts.selfID == 0 {
 		return opts, errors.New("brbbench: -self must occur in -remotes, in the same order on every node")
 	}
-	if _, err := brb.NewMachine(len(opts.Remotes), opts.f); err != nil {
+	if _, err := brb.NewStateMachine(len(opts.Remotes), opts.f); err != nil {
 		return opts, err
 	}
 	return opts, nil
@@ -128,7 +128,7 @@ func run(parent context.Context, opts options) error {
 	benchkit.RegisterControlServer(server, control)
 	var mu sync.Mutex
 	waiters := make(map[uint64]chan time.Time)
-	node, err := brb.NewGorumsNode(ctx, server, opts.f, func(d brb.Delivery) {
+	node, err := brb.NewReplica(ctx, server, opts.f, func(d brb.Delivery) {
 		if uint32(d.ID.Origin) != opts.selfID {
 			return
 		}

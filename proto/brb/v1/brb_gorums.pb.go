@@ -24,7 +24,7 @@ const (
 // meaning that proto message types with these names would collide with the
 // generated aliases and cause a compile error.
 //
-// The bundler (gorums_bundle.go) is responsible for discovering these
+// The protoc-gen-gorums bundler is responsible for discovering these
 // aliases and any other identifiers defined herein, and adding them to
 // the reserved identifiers list.
 //
@@ -42,17 +42,17 @@ type (
 // Reference imports to suppress errors if they are not otherwise used.
 var _ emptypb.Empty
 
-// Send is a multicast call invoked on all nodes in the configuration in ctx.
+// Propose is a multicast call invoked on all nodes in the configuration in ctx.
 // It returns a one-way call handle; call Send to block until every send
 // completes and observe any send errors, or Async to dispatch without waiting.
 // Use gorums.MapRequest to send different messages to each node.
 //
 // Example:
 //
-//	err := Send(ctx, in).Send()
-//	h := Send(ctx, in).Async(); err := h.Wait()
-func Send(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessage] {
-	return gorumsimpl.Multicast(ctx, in, "brb.v1.Broadcast.Send")
+//	err := Propose(ctx, in).Send()
+//	h := Propose(ctx, in).Async(); err := h.Wait()
+func Propose(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessage] {
+	return gorumsimpl.Multicast(ctx, in, "brb.v1.Bracha.Propose")
 }
 
 // Echo is a multicast call invoked on all nodes in the configuration in ctx.
@@ -65,7 +65,7 @@ func Send(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessage
 //	err := Echo(ctx, in).Send()
 //	h := Echo(ctx, in).Async(); err := h.Wait()
 func Echo(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessage] {
-	return gorumsimpl.Multicast(ctx, in, "brb.v1.Broadcast.Echo")
+	return gorumsimpl.Multicast(ctx, in, "brb.v1.Bracha.Echo")
 }
 
 // Ready is a multicast call invoked on all nodes in the configuration in ctx.
@@ -78,28 +78,28 @@ func Echo(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessage
 //	err := Ready(ctx, in).Send()
 //	h := Ready(ctx, in).Async(); err := h.Wait()
 func Ready(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessage] {
-	return gorumsimpl.Multicast(ctx, in, "brb.v1.Broadcast.Ready")
+	return gorumsimpl.Multicast(ctx, in, "brb.v1.Bracha.Ready")
 }
 
-// Broadcast is the server-side API for the Broadcast Service
-type BroadcastServer interface {
-	Send(gorums.ServerContext, *PhaseMessage)
+// Bracha is the server-side API for the Bracha Service
+type BrachaServer interface {
+	Propose(gorums.ServerContext, *PhaseMessage)
 	Echo(gorums.ServerContext, *PhaseMessage)
 	Ready(gorums.ServerContext, *PhaseMessage)
 }
 
-func RegisterBroadcastServer(srv *gorums.Server, impl BroadcastServer) {
-	srv.RegisterHandler("brb.v1.Broadcast.Send", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
+func RegisterBrachaServer(srv *gorums.Server, impl BrachaServer) {
+	srv.RegisterHandler("brb.v1.Bracha.Propose", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
 		req := gorums.AsProto[*PhaseMessage](in)
-		impl.Send(ctx, req)
+		impl.Propose(ctx, req)
 		return nil, nil
 	})
-	srv.RegisterHandler("brb.v1.Broadcast.Echo", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
+	srv.RegisterHandler("brb.v1.Bracha.Echo", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
 		req := gorums.AsProto[*PhaseMessage](in)
 		impl.Echo(ctx, req)
 		return nil, nil
 	})
-	srv.RegisterHandler("brb.v1.Broadcast.Ready", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
+	srv.RegisterHandler("brb.v1.Bracha.Ready", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
 		req := gorums.AsProto[*PhaseMessage](in)
 		impl.Ready(ctx, req)
 		return nil, nil

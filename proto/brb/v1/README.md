@@ -1,25 +1,12 @@
-# BRB protocol definitions
+# BRB service
 
-`brb.proto` defines one-way Gorums multicast calls for the three phases of
-the provisional Bracha-style protocol: `Send`, `Echo`, and `Ready`.
-The adapter sends each phase to every process, including itself. The Empty
-return type is required by the service definition, but multicast sends no reply.
-Successful sending does not mean that recipients processed or delivered the
-value. This prototype does not retry failed sends.
+`brb.proto` defines `Bracha.Propose`, `Bracha.Echo` and `Bracha.Ready`.
+Each is a Gorums one-way multicast. The generated `.Send()` method waits for
+sends, not application delivery.
 
-The generated multicast functions return an `OnewayCall`. The adapter invokes
-`.Send()` to perform each multicast and obtain its send error. The pinned runtime
-uses `gorums.ServerContext` in handlers and `gorums.Config` for peer membership.
-The local member is included and served in-process.
+Regenerate with `make generate`. Do not edit generated Go files.
+All replicas must use the same generated RPC names. Old binaries using
+`Broadcast.Send` are incompatible with this version.
 
-Regenerate the Go and Gorums bindings from the repository root:
-
-```sh
-make generate
-```
-
-The broadcast identifier currently consists of the designated origin process
-and an origin-local sequence number. Protocol thresholds and the final system
-model remain subject to supervisor confirmation. The prototype carries a trusted
-logical sender ID in each phase message. Authentication is deferred, so
-experiments must not allow a faulty process to impersonate another process.
+A broadcast ID contains the origin and sequence. The logical sender field is
+trusted until upstream authenticated peer verification is integrated.

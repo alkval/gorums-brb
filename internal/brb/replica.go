@@ -16,11 +16,11 @@ type Delivery struct {
 	Value []byte
 }
 
-// GorumsNode connects the state machine to Gorums multicast.
+// Replica connects the state machine to Gorums multicast.
 // Sender IDs are trusted for now. Authentication is deliberately deferred.
-type GorumsNode struct {
+type Replica struct {
 	self      ProcessID
-	machine   *Machine
+	machine   *StateMachine
 	config    gorums.Config
 	ctx       context.Context // lifetime of the experiment, not one incoming request
 	onDeliver func(Delivery)
@@ -28,16 +28,16 @@ type GorumsNode struct {
 	started   map[uint64]bool
 }
 
-// NewGorumsNode registers the adapter before server.Serve. All processes must
+// NewReplica registers the adapter before server.Serve. All processes must
 // use the same fixed configuration (IDs 1..n) and fault bound. Keep ctx alive
 // throughout the run, then cancel it before server.Stop. The caller owns both.
 // onDeliver must be quick and safe for concurrent calls.
-func NewGorumsNode(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*GorumsNode, error) {
+func NewReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*Replica, error) {
 	if ctx == nil || server == nil {
 		return nil, errors.New("brb: nil run context or Gorums server")
 	}
 	config := server.PeerConfig()
-	machine, err := NewMachine(len(config), f)
+	machine, err := NewStateMachine(len(config), f)
 	if err != nil {
 		return nil, err
 	}
@@ -50,18 +50,18 @@ func NewGorumsNode(ctx context.Context, server *gorums.Server, f int, onDeliver 
 	if self == 0 || uint64(self) > uint64(len(config)) {
 		return nil, errors.New("brb: server identity is outside configuration")
 	}
-	node := &GorumsNode{
+	node := &Replica{
 		self: self, machine: machine, config: config, ctx: ctx,
 		onDeliver: onDeliver, started: make(map[uint64]bool),
 	}
-	brbv1.RegisterBroadcastServer(server, node)
+	brbv1.RegisterBrachaServer(server, node)
 	return node, nil
 }
 
 // Broadcast sends SEND to every process, including this one. A nil result
 // means sent, not delivered. A sequence cannot be reused, even after a send
 // error, since some recipients may already have received the value.
-func (n *GorumsNode) Broadcast(sequence uint64, value []byte) error {
+func (n *Replica) Broadcast(sequence uint64, value []byte) error {
 	if sequence == 0 {
 		return errors.New("brb: sequence must be positive")
 	}
@@ -76,23 +76,23 @@ func (n *GorumsNode) Broadcast(sequence uint64, value []byte) error {
 	n.started[sequence] = true
 	n.mu.Unlock()
 	id := BroadcastID{Origin: n.self, Sequence: sequence}
-	return brbv1.Send(n.config.Context(n.ctx), phaseMessage(n.self, id, value)).Send()
+	return brbv1.Propose(n.config.Context(n.ctx), phaseMessage(n.self, id, value)).Send()
 }
 
-func (n *GorumsNode) Send(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
-	n.handle(ctx, PhaseSend, msg)
+func (n *Replica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
+	n.handle(ctx, PhasePropose, msg)
 }
 
-func (n *GorumsNode) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
+func (n *Replica) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	n.handle(ctx, PhaseEcho, msg)
 }
 
-func (n *GorumsNode) Ready(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
+func (n *Replica) Ready(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	n.handle(ctx, PhaseReady, msg)
 }
 
-func (n *GorumsNode) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.PhaseMessage) {
-	// Machine.Handle has its own lock. Release Gorums before sending to self
+func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.PhaseMessage) {
+	// StateMachine.Handle has its own lock. Release Gorums before sending to self
 	// or calling user code, which can cause more requests to this node.
 	ctx.Release()
 	if n.ctx.Err() != nil {

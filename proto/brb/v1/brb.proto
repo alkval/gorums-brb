@@ -8,10 +8,10 @@ option features.enforce_naming_style = STYLE_LEGACY;
 import "google/protobuf/empty.proto";
 import "gorums.proto";
 
-// Broadcast transports the three phases of Bracha-style reliable broadcast.
+// Bracha transports the three phases of Byzantine reliable broadcast.
 // Each phase is a one-way multicast, including to the sending process itself.
-service Broadcast {
-  rpc Send(PhaseMessage) returns (google.protobuf.Empty) {
+service Bracha {
+  rpc Propose(PhaseMessage) returns (google.protobuf.Empty) {
     option (gorums.multicast) = true;
   }
 
