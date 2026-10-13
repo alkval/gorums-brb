@@ -9,7 +9,8 @@ Go 1.27.2 or newer is selected through `go.mod`.
 
 ```sh
 make build
-make fmt test vet
+make fix fmt test vet
+make lint
 go test -race ./...
 make bench-linux
 ```
