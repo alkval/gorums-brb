@@ -1,19 +1,19 @@
 module github.com/alkval/gorums-brb
 
-go 1.26.2
+go 1.27.2
 
 require (
-	github.com/relab/gorums v0.11.1-0.20261004134300-37b0d66e9174
-	github.com/relab/gorums/benchkit v0.0.0-20261004134300-37b0d66e9174
-	google.golang.org/grpc v1.82.0
-	google.golang.org/protobuf v1.36.11
+	github.com/relab/gorums v0.11.1-0.20261012202156-00c1b1d48897
+	github.com/relab/gorums/benchkit v0.0.0-20261012202156-00c1b1d48897
+	google.golang.org/grpc v1.84.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
-	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
-	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
-	golang.org/x/text v0.38.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7 // indirect
+	golang.org/x/exp v0.0.0-20261007192929-f45ad48fbe92 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20261005182115-fad411399dd8 // indirect
 )

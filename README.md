@@ -42,9 +42,9 @@ features.
 
 ## Development
 
-The Makefile pins Go 1.26.7 for reproducible builds and generation. Gorums is
-pinned to `37b0d66e91742114461e1ebd051877027dd75806` from the upstream
-`cmd/sweep` branch. This revision provides the runtime API used by current
+The module requires Go 1.27.2 for builds and generation. Gorums is
+pinned to `00c1b1d48897c233c8bc68de9acccc0c482e38e6` from upstream
+`master`, including the merged sweep support. This revision provides the runtime API used by current
 benchkit. Sweep integration uses `brbbench`, not the node demonstration executable.
 
 ```sh
@@ -64,7 +64,7 @@ For the first prototype demonstration, follow the
 To check the same setup automatically with a fresh run:
 
 ```sh
-GOTOOLCHAIN=go1.26.7 go test -v -count=1 ./cmd/brbnode -run '^TestFourProcessesDeliver'
+go test -v -count=1 ./cmd/brbnode -run '^TestFourProcessesDeliver'
 ```
 
 ## Repository map

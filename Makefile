@@ -1,4 +1,4 @@
-GO := GOTOOLCHAIN=go1.26.7 go
+GO := go
 PROTO_FILES = $(shell find proto -name '*.proto' -type f)
 
 .PHONY: fmt generate test vet
