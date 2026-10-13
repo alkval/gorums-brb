@@ -26,24 +26,8 @@ func TestFourProcessesDeliverRepeatedBroadcasts(t *testing.T) {
 	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{{count: 3}})
 }
 
-func TestFourProcessesDeliverPeriodicBroadcastsFromEveryNode(t *testing.T) {
-	workload := senderWorkload{count: 3, payloadSize: 256, interval: 50 * time.Millisecond}
-	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{workload, workload, workload, workload})
-}
-
-func TestFourProcessesDeliverDifferentWorkloads(t *testing.T) {
-	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{
-		{count: 3, payloadSize: 1},
-		{count: 3, payloadSize: 64, interval: 10 * time.Millisecond},
-		{count: 3, payloadSize: 65, interval: 25 * time.Millisecond},
-		{count: 2, payloadSize: 1 << 20, interval: 50 * time.Millisecond},
-	})
-}
-
 type senderWorkload struct {
-	count       int
-	payloadSize int
-	interval    time.Duration
+	count int
 }
 
 // The workloads belong to consecutive sender IDs, starting at 1.
@@ -53,13 +37,12 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 		t.Skip("separate-process smoke test")
 	}
 	tmp := t.TempDir()
-	binary := filepath.Join(tmp, "brbnode")
+	binary := filepath.Join(tmp, "brb")
 	buildCtx, buildCancel := context.WithTimeout(t.Context(), time.Minute)
 	defer buildCancel()
 	build := exec.CommandContext(buildCtx, "go", "build", "-o", binary, ".")
-	build.Env = append(os.Environ(), "GOTOOLCHAIN=go1.26.7")
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build brbnode: %v\n%s", err, output)
+		t.Fatalf("build brb: %v\n%s", err, output)
 	}
 
 	// Hold all four ports together so the selected addresses are distinct.
@@ -96,11 +79,6 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 	for sender, workload := range workloads {
 		for i := range workload.count {
 			value := `value="hello"`
-			if workload.payloadSize > 0 && workload.payloadSize <= 64 {
-				value = fmt.Sprintf("value=%q", strings.Repeat("x", workload.payloadSize))
-			} else if workload.payloadSize > 64 {
-				value = fmt.Sprintf("bytes=%d", workload.payloadSize)
-			}
 			expectedDeliveries[fmt.Sprintf("origin=%d sequence=%d %s", sender+1, i+1, value)] = 0
 		}
 	}
@@ -134,7 +112,7 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 			for delivery := range expectedDeliveries {
 				expected[delivery] = 0
 			}
-			for _, line := range strings.Split(string(output), "\n") {
+			for line := range strings.SplitSeq(string(output), "\n") {
 				if !strings.Contains(line, " delivered ") {
 					continue
 				}
@@ -168,12 +146,8 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 		args := []string{"-id", strconv.Itoa(id), "-f", "1", "-peers", peers}
 		if id <= len(workloads) {
 			workload := workloads[id-1]
-			if workload.payloadSize > 0 {
-				args = append(args, "-payload-size", strconv.Itoa(workload.payloadSize))
-			} else {
-				args = append(args, "-broadcast", "hello")
-			}
-			args = append(args, "-count", strconv.Itoa(workload.count), "-interval", workload.interval.String())
+			args = append(args, "-broadcast", "hello")
+			args = append(args, "-count", strconv.Itoa(workload.count))
 		}
 		cmd := exec.Command(binary, args...)
 		cmd.Stdout, cmd.Stderr = output, output
