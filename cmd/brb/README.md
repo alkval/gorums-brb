@@ -69,7 +69,8 @@ allows 30 seconds plus one second per replica. Completion allows 10 seconds plus
 100 ms per replica, followed by a one-second drain. These are outside measurement.
 
 If startup fails, check addresses, ports and that every member is running.
-If a replica logs a sequence-window violation, investigate gaps or lag and
-discard that run, including reports collected from other replicas.
+Any replica that observes a sequence-window violation rejects its benchmark
+result and writes no report. Investigate gaps or lag and discard that run,
+including reports collected from other replicas.
 Logical identities are trusted, and failed BRB sends to correct peers are not
 repaired. See the root README for the receive-window assumptions.

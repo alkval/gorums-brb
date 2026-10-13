@@ -339,3 +339,36 @@ func TestPhaseMessageOwnsPayload(t *testing.T) {
 		t.Fatal("phase message lost its identifier or shared the input payload")
 	}
 }
+
+func TestWindowErrorPersistsAfterSuccessfulDelivery(t *testing.T) {
+	handled := make(chan struct{}, 1)
+	observe := gorums.WithServerInterceptors(func(ctx gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
+		out, err := next(ctx, msg)
+		if phase, ok := msg.Proto.(*brbv1.PhaseMessage); ok && phase.GetId().GetSequence() == ^uint64(0) {
+			handled <- struct{}{}
+		}
+		return out, err
+	})
+	nodes, systems, deliveries := localNodes(t, 1, 0, gorums.WithLocalServerOptions(observe))
+	serve(t, systems)
+	if err := nodes[0].WindowError(); err != nil {
+		t.Fatalf("fresh replica: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := brbv1.Echo(systems[0].PeerConfig().Context(ctx), phaseMessage(1, BroadcastID{1, ^uint64(0)}, []byte("future"))).Send(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handled:
+	case <-ctx.Done():
+		t.Fatal("future message was not handled")
+	}
+	if err := nodes[0].Broadcast(1, []byte("valid")); err != nil {
+		t.Fatal(err)
+	}
+	awaitDelivery(t, deliveries[0], BroadcastID{1, 1}, "valid")
+	if !errors.Is(nodes[0].WindowError(), ErrOutsideWindow) {
+		t.Fatal("successful delivery cleared the window error")
+	}
+}

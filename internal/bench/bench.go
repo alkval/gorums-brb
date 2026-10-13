@@ -132,6 +132,12 @@ func Run(parent context.Context, opts Options) error {
 	if err := waitGrace(ctx, time.Second); err != nil {
 		return err
 	}
+	// Stop accepting traffic before checking the run's window status.
+	cancel()
+	node.server.Stop()
+	if err := node.replica.WindowError(); err != nil {
+		return fmt.Errorf("brb bench: invalid run: %w", err)
+	}
 	label := fmt.Sprintf("node %d f=%d", opts.selfID, opts.f)
 	if opts.failFast {
 		label += " fail-fast=true"
