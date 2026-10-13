@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alkval/gorums-brb/internal/brb"
 	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchkit"
@@ -102,6 +103,47 @@ func TestLocalDeliveryAndReport(t *testing.T) {
 			}
 			_ = listener.Close()
 		})
+	}
+}
+
+func TestWindowViolationPreventsReport(t *testing.T) {
+	peer := addresses(t, 1)[0]
+	path := filepath.Join(t.TempDir(), "result.binpb")
+	opts, err := ParseOptions([]string{"-self=" + peer, "-remotes=" + peer,
+		"-output=" + path, "-time=500ms", "-rate=10"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Run(ctx, opts) }()
+	config, closeConfig, err := gorums.NewConfig(gorums.WithNodeList([]string{peer}),
+		gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(grpc.WaitForReady(true))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeConfig()
+	// The normal workload can still complete its own broadcasts. This injected
+	// message must nevertheless disqualify the resulting measurement.
+	msg := brbv1.PhaseMessage_builder{
+		Id:     brbv1.BroadcastID_builder{Origin: 1, Sequence: ^uint64(0)}.Build(),
+		Sender: 1, Value: []byte("outside window"),
+	}.Build()
+	if err := brbv1.Echo(config.Context(ctx), msg).Send(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, brb.ErrOutsideWindow) {
+			t.Fatalf("window violation returned %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("benchmark did not finish")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid run wrote a report: %v", err)
 	}
 }
 

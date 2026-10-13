@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync/atomic"
 
 	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
@@ -23,6 +24,7 @@ type Replica struct {
 	config         gorums.Config
 	ctx            context.Context // lifetime of the experiment, not one incoming request
 	onDeliver      func(Delivery)
+	windowExceeded atomic.Bool
 }
 
 // NewReplica registers the adapter before server.Serve. All processes must
@@ -88,6 +90,15 @@ func (n *Replica) Ready(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	n.handle(ctx, PhaseReady, msg)
 }
 
+// WindowError reports a receive-window violation for this replica's lifetime.
+// Rejected messages do not stop the protocol, but invalidate benchmark results.
+func (n *Replica) WindowError() error {
+	if n.windowExceeded.Load() {
+		return ErrOutsideWindow
+	}
+	return nil
+}
+
 func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.PhaseMessage) {
 	// StateMachine.Handle has its own lock. Release Gorums before sending to self
 	// or calling user code, which can cause more requests to this node.
@@ -102,6 +113,9 @@ func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.Phase
 	id := BroadcastID{Origin: ProcessID(msg.GetId().GetOrigin()), Sequence: msg.GetId().GetSequence()}
 	actions, err := n.machine.Handle(ProcessID(msg.GetSender()), phase, id, msg.GetValue())
 	if err != nil {
+		if errors.Is(err, ErrOutsideWindow) {
+			n.windowExceeded.Store(true)
+		}
 		log.Printf("brb node %d: %v", n.self, err)
 		return
 	}
