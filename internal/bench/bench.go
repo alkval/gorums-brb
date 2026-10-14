@@ -110,7 +110,11 @@ func Run(parent context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer func() { cancel(); node.server.Stop() }()
+	defer func() {
+		cancel()
+		node.server.Stop()
+		node.replica.LogMulticastFailures()
+	}()
 	if err := awaitPeers(ctx, node, opts); err != nil {
 		return err
 	}

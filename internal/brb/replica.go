@@ -25,6 +25,8 @@ type Replica struct {
 	ctx            context.Context // lifetime of the experiment, not one incoming request
 	onDeliver      func(Delivery)
 	windowExceeded atomic.Bool
+	echoFailures   atomic.Uint64
+	readyFailures  atomic.Uint64
 }
 
 // NewReplica registers the adapter before server.Serve. All processes must
@@ -99,6 +101,25 @@ func (n *Replica) WindowError() error {
 	return nil
 }
 
+// LogMulticastFailures reports failed ECHO and READY sends, not failed deliveries.
+// Call once at shutdown after cancelling the run and stopping the server.
+func (n *Replica) LogMulticastFailures() {
+	echo, ready := n.echoFailures.Load(), n.readyFailures.Load()
+	if echo != 0 || ready != 0 {
+		log.Printf("brb node %d: multicast failures: ECHO=%d READY=%d", n.self, echo, ready)
+	}
+}
+
+func (n *Replica) recordMulticastFailure(action Action, err error) {
+	count, phase := &n.echoFailures, "ECHO"
+	if action.Type == ActionMulticastReady {
+		count, phase = &n.readyFailures, "READY"
+	}
+	if count.Add(1) == 1 {
+		log.Printf("brb node %d: first %s multicast failure for %v: %v (further failures counted)", n.self, phase, action.ID, err)
+	}
+}
+
 func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.PhaseMessage) {
 	// StateMachine.Handle has its own lock. Release Gorums before sending to self
 	// or calling user code, which can cause more requests to this node.
@@ -137,7 +158,7 @@ func (n *Replica) performActions(actions []Action) {
 		}
 		if err != nil {
 			// A failed multicast must not skip an already enabled delivery.
-			log.Printf("brb node %d: multicast for %v failed: %v", n.self, action.ID, err)
+			n.recordMulticastFailure(action, err)
 		}
 	}
 }

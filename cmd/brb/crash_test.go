@@ -63,6 +63,15 @@ func TestBenchmarkCrashFlag(t *testing.T) {
 		}
 	}
 	for id := 1; id <= 3; id++ {
+		logs, err := os.ReadFile(filepath.Join(tmp, fmt.Sprintf("node%d.log", id)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range []string{"first ECHO multicast failure", "first READY multicast failure", "multicast failures: ECHO="} {
+			if got := strings.Count(string(logs), message); got != 1 {
+				t.Fatalf("survivor %d: %q appeared %d times, want 1\n%s", id, message, got, logs)
+			}
+		}
 		report, err := benchkit.LoadReport(filepath.Join(tmp, fmt.Sprintf("node%d.binpb", id)))
 		if err != nil {
 			t.Fatal(err)

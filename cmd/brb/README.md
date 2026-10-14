@@ -74,3 +74,11 @@ result and writes no report. Investigate gaps or lag and discard that run,
 including reports collected from other replicas.
 Logical identities are trusted, and failed BRB sends to correct peers are not
 repaired. See the root README for the receive-window assumptions.
+
+Each replica logs the first ECHO and READY multicast failure with error details.
+Further failures are counted, with totals printed at normal shutdown. Each count
+is one failed multicast call, even if several recipients were unavailable.
+These totals are separate from failed measured operations: a broadcast can still
+deliver despite a failed send to a faulty replica. Other errors, including
+receive-window violations, are still logged normally. Abruptly killed processes
+cannot print a shutdown summary.

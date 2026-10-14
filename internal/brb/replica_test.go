@@ -1,8 +1,11 @@
 package brb
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,6 +16,37 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+func TestMulticastFailureLogging(t *testing.T) {
+	// These tests are not parallel: the standard logger is shared.
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(previous) })
+	node := &Replica{self: 1}
+	node.LogMulticastFailures()
+	if output.Len() != 0 {
+		t.Fatal("logged failures for a healthy replica")
+	}
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Go(func() {
+			node.recordMulticastFailure(Action{Type: ActionMulticastEcho}, errors.New("echo peer unavailable"))
+			node.recordMulticastFailure(Action{Type: ActionMulticastReady}, errors.New("ready peer unavailable"))
+		})
+	}
+	wg.Wait()
+	node.LogMulticastFailures()
+	got := output.String()
+	if strings.Count(got, "\n") != 3 ||
+		!strings.Contains(got, "first ECHO multicast failure") ||
+		!strings.Contains(got, "echo peer unavailable") ||
+		!strings.Contains(got, "first READY multicast failure") ||
+		!strings.Contains(got, "ready peer unavailable") ||
+		!strings.Contains(got, "multicast failures: ECHO=100 READY=100") {
+		t.Fatalf("unexpected failure logs:\n%s", got)
+	}
+}
 
 func localNodes(t *testing.T, count, f int, localOpts ...gorums.LocalServerOption) ([]*Replica, []*gorums.Server, []chan Delivery) {
 	t.Helper()
@@ -315,6 +349,13 @@ func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
 		t.Fatal("expected multicast to fail with a cancelled context")
 	}
 	node.performActions(actions)
+	if got := node.readyFailures.Load(); got != 1 {
+		t.Fatalf("READY failure count = %d, want 1", got)
+	}
+	node.performActions([]Action{{Type: ActionMulticastEcho, ID: id, Value: value}})
+	if got := node.echoFailures.Load(); got != 1 {
+		t.Fatalf("ECHO failure count = %d, want 1", got)
+	}
 	select {
 	case delivery := <-deliveries[0]:
 		if delivery.ID != id || string(delivery.Value) != string(value) {

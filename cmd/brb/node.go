@@ -87,6 +87,7 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		),
 	))
 	runCtx, cancel := context.WithCancel(ctx)
+	var node *brb.Replica
 	defer func() {
 		// Cancel protocol work before closing the server and its connections.
 		cancel()
@@ -95,11 +96,14 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 			err = nil
 		}
 		server.Stop()
+		if node != nil {
+			node.LogMulticastFailures()
+		}
 		if ctx.Err() != nil {
 			logger.Printf("node %d stopping", opts.id)
 		}
 	}()
-	node, err := brb.NewReplica(runCtx, server, opts.f, func(d brb.Delivery) {
+	node, err = brb.NewReplica(runCtx, server, opts.f, func(d brb.Delivery) {
 		logBroadcast(logger, opts.id, "delivered", d.ID, d.Value)
 	})
 	if err != nil {
