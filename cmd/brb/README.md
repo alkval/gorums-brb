@@ -37,13 +37,59 @@ origin broadcasts. State this measurement endpoint in figure captions.
 make bench-linux
 ```
 
-Build sweep from the Gorums revision in `go.mod`, and run it from that checkout's
-`benchkit` directory. For an approved four-host setup:
+Build sweep in a separate Gorums checkout at the revision pinned in `go.mod`
+(currently `00c1b1d48897c233c8bc68de9acccc0c482e38e6`):
 
 ```sh
-sweep -check -hosts 'compute[1-4]' -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 -port 9000
-sweep -hosts 'compute[1-4]' -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 -benchmarks BrachaLocalDelivery -n 4 -workers 1 -payload 256 -duration 10s -reps 1 -extra-args '-mode=bench' -port 9000 -fd-limit 0 -outdir /path/to/results -sweep brb-diagnostic
+git clone --no-checkout https://github.com/relab/gorums.git /path/to/gorums-sweep
+cd /path/to/gorums-sweep
+git checkout --detach 00c1b1d48897c233c8bc68de9acccc0c482e38e6
+make sweep
+cd benchkit
 ```
+
+The executable is `benchkit/cmd/sweep/sweep`. Run it from the `benchkit` module
+root, using absolute paths for the BRB binary, SSH configuration and output.
+Replace `/path/to/...` and the example `compute` SSH aliases with your setup.
+Run on the approved driver machine, with approved hosts, ports and workload
+settings. For a four-host diagnostic, run preflight, the workload, then postflight:
+
+```sh
+./cmd/sweep/sweep -check -hosts 'compute[1-4]' \
+  -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 -port 9000
+./cmd/sweep/sweep -hosts 'compute[1-4]' \
+  -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 \
+  -benchmarks BrachaLocalDelivery -n 4 -workers 1 -payload 256 \
+  -duration 10s -reps 1 -rate 0 -extra-args '-mode=bench' \
+  -port 9000 -remote-dir /tmp -fd-limit 0 \
+  -outdir /path/to/gorums-brb/experiments/out -sweep brb-diagnostic
+./cmd/sweep/sweep -check -hosts 'compute[1-4]' \
+  -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 -port 9000
+```
+
+To vary membership, use a host set large enough for the largest group. For an
+approved pool of twelve machines, preflight that pool and run:
+
+```sh
+./cmd/sweep/sweep -check -hosts 'compute[1-12]' \
+  -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 -port 9000
+./cmd/sweep/sweep -hosts 'compute[1-12]' \
+  -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 \
+  -benchmarks BrachaLocalDelivery -n 4,7,10 -workers 1,2 -payload 256 \
+  -duration 10s -reps 3 -rate 0 -extra-args '-mode=bench' -verbose -trim 1s \
+  -port 9000 -remote-dir /tmp -fd-limit 0 \
+  -outdir /path/to/gorums-brb/experiments/out -sweep brb-membership
+./cmd/sweep/sweep -check -hosts 'compute[1-12]' \
+  -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 -port 9000
+```
+
+Omitting `-f` selects `(n-1)/3`: the groups above use f=1, 2 and 3. A fixed
+`-f=1` in extra arguments would override that for every group. The review's
+4/7/10/13-node matrix additionally needs thirteen approved machines. With that
+inventory, expand the host range to `[1-13]` and use `-n 4,7,10,13`, giving
+f=1, 2, 3 and 4. The pool from `pitter1` through `pitter12` alone cannot provide
+thirteen separate hosts.
+These are run recipes, not claims that the larger matrix has been executed.
 
 Use sweep's `-trim` for warm-up removal and repeated runs for evaluation.
 
