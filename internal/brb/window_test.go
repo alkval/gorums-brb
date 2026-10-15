@@ -51,11 +51,12 @@ func TestWindowRejectsFutureAndOversizedMessagesWithoutStorage(t *testing.T) {
 }
 
 func TestWindowBoundsLongRunAndKeepsOriginsIndependent(t *testing.T) {
+	const broadcasts = 100_000
 	m, err := NewStateMachine(2, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for seq := uint64(1); seq <= 3*WindowSize; seq++ {
+	for seq := uint64(1); seq <= broadcasts; seq++ {
 		id := BroadcastID{1, seq}
 		if err := m.reserve(t.Context(), id); err != nil {
 			t.Fatal(err)
@@ -64,6 +65,9 @@ func TestWindowBoundsLongRunAndKeepsOriginsIndependent(t *testing.T) {
 		if len(m.instances) != 0 {
 			t.Fatal("completed run retained instances")
 		}
+	}
+	if m.delivered[1] != broadcasts {
+		t.Fatalf("delivered prefix = %d, want %d", m.delivered[1], broadcasts)
 	}
 	if err := m.reserve(t.Context(), BroadcastID{1, 1}); err == nil {
 		t.Fatal("reused compacted sequence")
