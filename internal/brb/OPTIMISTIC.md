@@ -43,14 +43,34 @@ is rejected for this variant to avoid reporting it as a fault-tolerant compariso
 
 ## Cost and testing
 
-Counting logical sends including self, fault-free Bracha sends n+2n² messages.
-This variant sends n+Q(f+1)+(f+1)(2f+1)+n(2f+1), with one extra sequential phase.
-For n=4 and f=1 this is 28 instead of 36. These counts are not TCP byte counts,
-and lower message counts do not guarantee lower latency or higher throughput.
+If every assigned sender completes every phase, the logical send counts,
+including self, are n+2n² for Bracha and
+n+Q(f+1)+(f+1)(2f+1)+n(2f+1) for this variant. For n=4 and f=1, these
+full-phase counts are 36 and 28. Bracha can deliver before processing some
+earlier-phase messages and then ignore them, so its actual send count can be
+lower. These formulas are not measurements of traffic or TCP bytes. The
+optimistic path also adds a sequential phase, so fewer sends do not guarantee
+lower latency or higher throughput.
 
 Tests cover threshold boundaries, noncommittee votes, duplicates, conflicting
 votes, rotation, reordered concurrent instances, real Gorums delivery and
 benchmark reports. A negative test demonstrates the missing totality guarantee.
 Performance reports use `OptimisticLocalDelivery`, with the same origin-local
 measurement endpoint as `BrachaLocalDelivery`. Compare identical workloads and
-record the source revision. No distributed performance result is claimed yet.
+record the source revision.
+
+Distributed comparisons on 15 October 2026 used revision `eca55c1` on four and
+seven Pitter machines. The 72 comparison trials covered n=4, f=1 and n=7,
+f=1 or f=2, with 256-byte or 4 KiB payloads and one or two workers per origin.
+Each configuration had three ten-second repetitions. All 432 reports passed
+the experiment checks. Three additional startup-confirmation trials were
+kept separate from the comparison.
+
+The optimistic path was slower in the four-node cases and with 256-byte
+payloads at seven nodes. With seven nodes, f=1, two workers and 4 KiB payloads,
+its mean aggregate throughput was about 63% higher than Bracha's. These short,
+fault-free runs show a workload-dependent tradeoff. They do not establish
+maximum capacity, Byzantine fault tolerance, or measured bandwidth savings.
+Raw reports, provenance and analysis remain in the ignored `experiments/out/`
+directories `brb-comparison-barrier-2026-10-15` and
+`brb-seven-node-barrier-2026-10-15`.
