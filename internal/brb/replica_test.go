@@ -122,6 +122,7 @@ type silentBroadcast struct{}
 func (silentBroadcast) Propose(gorums.ServerContext, *brbv1.PhaseMessage) {}
 func (silentBroadcast) Echo(gorums.ServerContext, *brbv1.PhaseMessage)    {}
 func (silentBroadcast) Ready(gorums.ServerContext, *brbv1.PhaseMessage)   {}
+func (silentBroadcast) QEcho(gorums.ServerContext, *brbv1.PhaseMessage)   {}
 
 func TestGorumsFourNodesWithSilentPeer(t *testing.T) {
 	const lateValue = "late conflicting value"

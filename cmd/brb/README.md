@@ -22,6 +22,11 @@ Every replica should deliver sequences 1, 2 and 3 once. Their order may differ.
 Stop all replicas with Ctrl+C before repeating. The demo uses `-broadcast` and
 `-count`. Payload sizes and paced workloads belong to benchmark mode.
 
+For the experimental optimistic variant, add `-optimistic` to **every** node's
+command. Keep the same membership and f on all nodes and restart the whole group
+when changing variants. It uses rotating committees and has no recovery.
+Selected faulty members can stall delivery. See [protocol details](../../internal/brb/OPTIMISTIC.md).
+
 ## Benchmark and sweep
 
 Each worker originates broadcasts and waits for local delivery. Latency ends at
@@ -41,6 +46,10 @@ sweep -hosts 'compute[1-4]' -config /path/to/private-ssh-config -binary /path/to
 ```
 
 Use sweep's `-trim` for warm-up removal and repeated runs for evaluation.
+
+To compare the optimistic variant, select `-benchmarks OptimisticLocalDelivery`
+and use `-extra-args '-mode=bench -optimistic'`. Keep all other workload settings
+identical. Fault injection flags are rejected for optimistic benchmarks.
 Use `-stats-mode hdr` for long runs. No separate warm-up phase is implemented.
 Capture `make provenance BINARY=bin/brb-linux-amd64` beside each sweep manifest.
 It prints the checkout state, binary build information and SHA-256.

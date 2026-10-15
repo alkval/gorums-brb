@@ -27,6 +27,7 @@ type Replica struct {
 	windowExceeded atomic.Bool
 	echoFailures   atomic.Uint64
 	readyFailures  atomic.Uint64
+	qEchoFailures  atomic.Uint64
 }
 
 // NewReplica registers the adapter before server.Serve. All processes must
@@ -34,6 +35,16 @@ type Replica struct {
 // throughout the run, then cancel it before server.Stop. The caller owns both.
 // onDeliver must be quick and safe for concurrent calls.
 func NewReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*Replica, error) {
+	return newReplica(ctx, server, f, onDeliver, false)
+}
+
+// NewOptimisticReplica uses rotating committees with no fallback or recovery.
+// All members must select this variant, and faulty committee members may stall it.
+func NewOptimisticReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*Replica, error) {
+	return newReplica(ctx, server, f, onDeliver, true)
+}
+
+func newReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery), optimistic bool) (*Replica, error) {
 	if ctx == nil || server == nil {
 		return nil, errors.New("brb: nil run context or Gorums server")
 	}
@@ -50,6 +61,12 @@ func NewReplica(ctx context.Context, server *gorums.Server, f int, onDeliver fun
 	self := ProcessID(server.NodeID())
 	if self == 0 || uint64(self) > uint64(len(config)) {
 		return nil, errors.New("brb: server identity is outside configuration")
+	}
+	if optimistic {
+		machine, err = NewOptimisticStateMachine(len(config), f, self)
+		if err != nil {
+			return nil, err
+		}
 	}
 	node := &Replica{
 		self: self, machine: machine, config: config, ctx: ctx,
@@ -77,7 +94,7 @@ func (n *Replica) Broadcast(sequence uint64, value []byte) error {
 	if err := n.machine.reserve(n.ctx, id); err != nil {
 		return err
 	}
-	return brbv1.Propose(n.config.Context(n.ctx), phaseMessage(n.self, id, value)).Send()
+	return brbv1.Propose(n.config.Context(n.ctx), n.message(id, value)).Send()
 }
 
 func (n *Replica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
@@ -90,6 +107,34 @@ func (n *Replica) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 
 func (n *Replica) Ready(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	n.handle(ctx, PhaseReady, msg)
+}
+
+func (n *Replica) QEcho(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
+	n.handle(ctx, PhaseQEcho, msg)
+}
+
+func (n *Replica) message(id BroadcastID, value []byte) *brbv1.PhaseMessage {
+	msg := phaseMessage(n.self, id, value)
+	msg.SetOptimistic(n.machine.optimistic)
+	return msg
+}
+
+// Subsets reuse the existing Gorums connections. PROPOSE and READY reach all.
+func (n *Replica) recipients(action Action) gorums.Config {
+	if !n.machine.optimistic || action.Type == ActionMulticastReady {
+		return n.config
+	}
+	size := n.machine.f + 1
+	if action.Type == ActionMulticastQEcho {
+		size = 2*n.machine.f + 1
+	}
+	peers := make(gorums.Config, 0, size)
+	for _, peer := range n.config {
+		if n.machine.committeeContains(action.ID, ProcessID(peer.ID()), size) {
+			peers = append(peers, peer)
+		}
+	}
+	return peers
 }
 
 // WindowError reports a receive-window violation for this replica's lifetime.
@@ -108,12 +153,18 @@ func (n *Replica) LogMulticastFailures() {
 	if echo != 0 || ready != 0 {
 		log.Printf("brb node %d: multicast failures: ECHO=%d READY=%d", n.self, echo, ready)
 	}
+	if count := n.qEchoFailures.Load(); count != 0 {
+		log.Printf("brb node %d: Q-ECHO multicast failures=%d", n.self, count)
+	}
 }
 
 func (n *Replica) recordMulticastFailure(action Action, err error) {
 	count, phase := &n.echoFailures, "ECHO"
 	if action.Type == ActionMulticastReady {
 		count, phase = &n.readyFailures, "READY"
+	}
+	if action.Type == ActionMulticastQEcho {
+		count, phase = &n.qEchoFailures, "Q-ECHO"
 	}
 	if count.Add(1) == 1 {
 		log.Printf("brb node %d: first %s multicast failure for %v: %v (further failures counted)", n.self, phase, action.ID, err)
@@ -129,6 +180,10 @@ func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.Phase
 	}
 	if msg == nil || msg.GetId() == nil {
 		log.Printf("brb node %d: missing broadcast ID", n.self)
+		return
+	}
+	if msg.GetOptimistic() != n.machine.optimistic {
+		log.Printf("brb node %d: rejected mismatched protocol variant", n.self)
 		return
 	}
 	id := BroadcastID{Origin: ProcessID(msg.GetId().GetOrigin()), Sequence: msg.GetId().GetSequence()}
@@ -148,9 +203,11 @@ func (n *Replica) performActions(actions []Action) {
 		var err error
 		switch action.Type {
 		case ActionMulticastEcho:
-			err = brbv1.Echo(n.config.Context(n.ctx), phaseMessage(n.self, action.ID, action.Value)).Send()
+			err = brbv1.Echo(n.recipients(action).Context(n.ctx), n.message(action.ID, action.Value)).Send()
 		case ActionMulticastReady:
-			err = brbv1.Ready(n.config.Context(n.ctx), phaseMessage(n.self, action.ID, action.Value)).Send()
+			err = brbv1.Ready(n.config.Context(n.ctx), n.message(action.ID, action.Value)).Send()
+		case ActionMulticastQEcho:
+			err = brbv1.QEcho(n.recipients(action).Context(n.ctx), n.message(action.ID, action.Value)).Send()
 		case ActionDeliver:
 			if n.onDeliver != nil {
 				n.onDeliver(Delivery{ID: action.ID, Value: action.Value})

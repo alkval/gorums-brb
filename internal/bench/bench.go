@@ -26,11 +26,19 @@ const benchmarkName = "BrachaLocalDelivery"
 
 type Options struct {
 	*benchkit.StandardFlags
-	f         int
-	selfID    uint32
-	failFast  bool
-	fault     string
-	faultNode uint
+	f          int
+	selfID     uint32
+	failFast   bool
+	fault      string
+	faultNode  uint
+	optimistic bool
+}
+
+func (o Options) benchmarkName() string {
+	if o.optimistic {
+		return "OptimisticLocalDelivery"
+	}
+	return benchmarkName
 }
 
 func ParseOptions(args []string, output io.Writer) (Options, error) {
@@ -38,6 +46,7 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	fs.SetOutput(output)
 	opts := Options{StandardFlags: benchkit.RegisterFlags(fs)}
 	fs.IntVar(&opts.f, "f", -1, "fault bound (default: (n-1)/3)")
+	fs.BoolVar(&opts.optimistic, "optimistic", false, "use experimental rotating committees without recovery (all nodes)")
 	fs.BoolVar(&opts.failFast, "fail-fast", false, "report unavailable-peer sends promptly for fault diagnostics; correct peers must already be connected")
 	fs.StringVar(&opts.fault, "fault", "none", "faulty replica behavior: none, silent, equivocate, wrong-echo")
 	fs.UintVar(&opts.faultNode, "fault-node", 0, "faulty replica ID (default: last replica)")
@@ -50,8 +59,8 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	if err := opts.Options().Validate(); err != nil {
 		return opts, err
 	}
-	if opts.Payload > 1<<20 || opts.Output == "" || !opts.Benchmarks.MatchString(benchmarkName) {
-		return opts, errors.New("brb bench: requires -output, a selector matching BrachaLocalDelivery, and payload <= 1 MiB")
+	if opts.Payload > 1<<20 || opts.Output == "" || !opts.Benchmarks.MatchString(opts.benchmarkName()) {
+		return opts, fmt.Errorf("brb bench: requires -output, a selector matching %s, and payload <= 1 MiB", opts.benchmarkName())
 	}
 	// Do not silently accept features this first benchmark does not implement.
 	if opts.StreamMode != "dual" || opts.RateStep != 0 || opts.RateStepMax != 0 ||
@@ -93,6 +102,9 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 		return opts, errors.New("brb: fault-kill-after must be positive and shorter than the workload")
 	}
 	if opts.FaultKillAfter > 0 || opts.fault != "none" {
+		if opts.optimistic {
+			return opts, errors.New("brb: optimistic benchmark supports fault-free comparisons only; recovery is not implemented")
+		}
 		if opts.f == 0 {
 			return opts, errors.New("brb: injected faults require f >= 1")
 		}
@@ -143,6 +155,9 @@ func Run(parent context.Context, opts Options) error {
 		return fmt.Errorf("brb bench: invalid run: %w", err)
 	}
 	label := fmt.Sprintf("node %d f=%d", opts.selfID, opts.f)
+	if opts.optimistic {
+		label += " optimistic=true"
+	}
 	if opts.failFast {
 		label += " fail-fast=true"
 	}
@@ -210,7 +225,11 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 	probed := make(chan struct{})
 	benchkit.RegisterControlServer(server, readyControl{Control: control, probed: probed})
 
-	replica, err := brb.NewReplica(ctx, server, opts.f, deliver)
+	newReplica := brb.NewReplica
+	if opts.optimistic {
+		newReplica = brb.NewOptimisticReplica
+	}
+	replica, err := newReplica(ctx, server, opts.f, deliver)
 	if err != nil {
 		_ = listener.Close()
 		server.Stop()
@@ -258,7 +277,7 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 	settings := opts.Options()
 	settings.NumNodes, settings.Remote = len(opts.Remotes), true
 	results, err := benchkit.Run(opts.Benchmarks, settings, []benchkit.Bench{{
-		Name: benchmarkName,
+		Name: opts.benchmarkName(),
 		Run: func(o benchkit.Options) (*benchkit.Result, error) {
 			measurement := benchkit.StartMeasurement(o)
 			defer measurement.Abandon()

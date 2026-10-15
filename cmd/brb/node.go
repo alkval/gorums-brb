@@ -20,11 +20,12 @@ import (
 )
 
 type options struct {
-	id        uint
-	f         int
-	peers     []string // list position determines the process ID, starting at 1
-	broadcast string   // optional value, repeated with distinct sequence numbers
-	count     int
+	id         uint
+	f          int
+	peers      []string // list position determines the process ID, starting at 1
+	broadcast  string   // optional value, repeated with distinct sequence numbers
+	count      int
+	optimistic bool
 }
 
 func parseOptions(args []string, output io.Writer) (options, error) {
@@ -37,6 +38,7 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.StringVar(&peers, "peers", "", "comma-separated host:port addresses, ordered by node ID")
 	flags.StringVar(&opts.broadcast, "broadcast", "", "nonempty value to broadcast after all peers connect")
 	flags.IntVar(&opts.count, "count", 1, "number of broadcasts, using sequences 1 through count")
+	flags.BoolVar(&opts.optimistic, "optimistic", false, "use experimental rotating committees without recovery (all nodes)")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
@@ -103,7 +105,11 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 			logger.Printf("node %d stopping", opts.id)
 		}
 	}()
-	node, err = brb.NewReplica(runCtx, server, opts.f, func(d brb.Delivery) {
+	newReplica := brb.NewReplica
+	if opts.optimistic {
+		newReplica = brb.NewOptimisticReplica
+	}
+	node, err = newReplica(runCtx, server, opts.f, func(d brb.Delivery) {
 		logBroadcast(logger, opts.id, "delivered", d.ID, d.Value)
 	})
 	if err != nil {
@@ -111,7 +117,7 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
-	logger.Printf("node %d listening on %s (n=%d f=%d)", opts.id, listener.Addr(), len(opts.peers), opts.f)
+	logger.Printf("node %d listening on %s (n=%d f=%d optimistic=%t)", opts.id, listener.Addr(), len(opts.peers), opts.f, opts.optimistic)
 	if opts.broadcast != "" {
 		// This demo assumes established connections. Wait for the full
 		// membership before asking the adapter to start the broadcast.

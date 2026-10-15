@@ -32,6 +32,7 @@ const (
 	PhasePropose Phase = iota + 1
 	PhaseEcho
 	PhaseReady
+	PhaseQEcho
 )
 
 // ActionType identifies work that the transport adapter must perform.
@@ -41,6 +42,7 @@ const (
 	ActionMulticastEcho ActionType = iota + 1
 	ActionMulticastReady
 	ActionDeliver
+	ActionMulticastQEcho
 )
 
 // Action is emitted by the state machine after processing one message.
@@ -53,21 +55,25 @@ type Action struct {
 // StateMachine owns at most WindowSize instances per origin. A contiguous
 // delivered prefix prevents duplicate delivery without retaining every ID.
 type StateMachine struct {
-	mu        sync.Mutex
-	n         int
-	f         int
-	instances map[BroadcastID]*instance
-	delivered map[ProcessID]uint64
-	changed   chan struct{}
+	mu         sync.Mutex
+	n          int
+	f          int
+	instances  map[BroadcastID]*instance
+	delivered  map[ProcessID]uint64
+	changed    chan struct{}
+	optimistic bool
+	self       ProcessID
 }
 
 type instance struct {
 	started   bool
 	echoSent  bool
 	readySent bool
+	qEchoSent bool
 	delivered bool
 	echoes    votes
 	readies   votes
+	qEchoes   votes
 }
 
 // Keep only the first vote from each sender in each phase. A correct sender
@@ -132,10 +138,13 @@ func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value
 	if len(value) > MaxPayloadSize {
 		return nil, errors.New("brb: payload exceeds 1 MiB")
 	}
-	if phase < PhasePropose || phase > PhaseReady {
+	if phase < PhasePropose || phase > PhaseQEcho || (phase == PhaseQEcho && !m.optimistic) {
 		return nil, fmt.Errorf("brb: unknown phase %d", phase)
 	}
 	if phase == PhasePropose && from != id.Origin {
+		return nil, nil
+	}
+	if m.optimistic && !m.accepts(from, phase, id) {
 		return nil, nil
 	}
 
@@ -166,13 +175,20 @@ func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value
 		}
 	case PhaseEcho:
 		count := state.echoes.add(from, value)
+		if m.optimistic {
+			if !state.qEchoSent && uint64(count) > (uint64(m.n)+uint64(m.f))/2 {
+				state.qEchoSent = true
+				actions = append(actions, newAction(ActionMulticastQEcho, id, value))
+			}
+			break
+		}
 		if !state.readySent && uint64(count) > (uint64(m.n)+uint64(m.f))/2 {
 			state.readySent = true
 			actions = append(actions, newAction(ActionMulticastReady, id, value))
 		}
 	case PhaseReady:
 		readyCount := state.readies.add(from, value)
-		if !state.readySent && readyCount > m.f {
+		if !m.optimistic && !state.readySent && readyCount > m.f {
 			state.readySent = true
 			actions = append(actions, newAction(ActionMulticastReady, id, value))
 		}
@@ -181,6 +197,11 @@ func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value
 			*state = instance{delivered: true}
 			m.compact(id.Origin)
 			actions = append(actions, newAction(ActionDeliver, id, value))
+		}
+	case PhaseQEcho:
+		if count := state.qEchoes.add(from, value); count > m.f && !state.readySent {
+			state.readySent = true
+			actions = append(actions, newAction(ActionMulticastReady, id, value))
 		}
 	}
 	return actions, nil

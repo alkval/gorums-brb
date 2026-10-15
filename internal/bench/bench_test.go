@@ -41,6 +41,19 @@ func TestParseOptions(t *testing.T) {
 	}
 }
 
+func TestOptimisticOptions(t *testing.T) {
+	base := []string{"-self=127.0.0.1:9000", "-remotes=127.0.0.1:9000,127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003", "-output=result.binpb", "-optimistic"}
+	opts, err := ParseOptions(base, io.Discard)
+	if err != nil || !opts.optimistic || opts.benchmarkName() != "OptimisticLocalDelivery" {
+		t.Fatalf("options: %+v %v", opts, err)
+	}
+	for _, extra := range []string{"-fault=silent", "-fault=wrong-echo", "-fault=equivocate", "-fault-kill-after=1ms", "-benchmarks=^BrachaLocalDelivery$"} {
+		if _, err := ParseOptions(append(append([]string{}, base...), extra), io.Discard); err == nil {
+			t.Fatalf("accepted %s", extra)
+		}
+	}
+}
+
 func addresses(t *testing.T, count int) []string {
 	t.Helper()
 	var listeners []net.Listener
@@ -62,7 +75,7 @@ func addresses(t *testing.T, count int) []string {
 	return result
 }
 
-func checkReport(t *testing.T, path string, nodes, workers, payload int) {
+func checkReport(t *testing.T, path string, nodes, workers, payload int, names ...string) {
 	t.Helper()
 	report, err := benchkit.LoadReport(path)
 	if err != nil {
@@ -73,7 +86,11 @@ func checkReport(t *testing.T, path string, nodes, workers, payload int) {
 	}
 	r := report.GetResults()[0]
 	c := r.GetConfig()
-	if c.GetName() != benchmarkName || int(c.GetNumNodes()) != nodes || int(c.GetWorkers()) != workers || int(c.GetPayload()) != payload {
+	name := benchmarkName
+	if len(names) > 0 {
+		name = names[0]
+	}
+	if c.GetName() != name || int(c.GetNumNodes()) != nodes || int(c.GetWorkers()) != workers || int(c.GetPayload()) != payload {
 		t.Fatalf("incorrect report metadata: %v", c)
 	}
 	if r.GetTotalOps() == 0 || r.GetFailedOps() != 0 || r.GetThroughput() <= 0 || len(r.Percentiles(0.95)) != 1 {
@@ -177,14 +194,18 @@ func TestFixedRateStopsAtMeasurementDeadline(t *testing.T) {
 }
 
 func TestFourNodesProduceReports(t *testing.T) {
-	testFourNodesProduceReports(t, false)
+	testFourNodesProduceReports(t, false, false)
 }
 
 func TestFailFastWithLateOrigin(t *testing.T) {
-	testFourNodesProduceReports(t, true)
+	testFourNodesProduceReports(t, true, false)
 }
 
-func testFourNodesProduceReports(t *testing.T, failFast bool) {
+func TestOptimisticFourNodesProduceReports(t *testing.T) {
+	testFourNodesProduceReports(t, false, true)
+}
+
+func testFourNodesProduceReports(t *testing.T, failFast, optimistic bool) {
 	t.Helper()
 	peers := addresses(t, 4)
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
@@ -213,6 +234,9 @@ func testFourNodesProduceReports(t *testing.T, failFast bool) {
 		if failFast {
 			args = append(args, "-fail-fast")
 		}
+		if optimistic {
+			args = append(args, "-optimistic", "-benchmarks=OptimisticLocalDelivery")
+		}
 		opts, err := ParseOptions(args, io.Discard)
 		if err != nil {
 			t.Fatal(err)
@@ -226,12 +250,19 @@ func testFourNodesProduceReports(t *testing.T, failFast bool) {
 	}
 	if !t.Failed() {
 		for i, path := range paths {
-			checkReport(t, path, 4, 2, 256)
+			name := benchmarkName
+			if optimistic {
+				name = "OptimisticLocalDelivery"
+			}
+			checkReport(t, path, 4, 2, 256, name)
 			report, err := benchkit.LoadReport(path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			label := fmt.Sprintf("node %d f=1", i+1)
+			if optimistic {
+				label += " optimistic=true"
+			}
 			if failFast {
 				label += " fail-fast=true"
 			}
@@ -311,6 +342,7 @@ func (p quietBenchmarkPeer) Propose(_ gorums.ServerContext, msg *brbv1.PhaseMess
 }
 func (quietBenchmarkPeer) Echo(gorums.ServerContext, *brbv1.PhaseMessage)  {}
 func (quietBenchmarkPeer) Ready(gorums.ServerContext, *brbv1.PhaseMessage) {}
+func (quietBenchmarkPeer) QEcho(gorums.ServerContext, *brbv1.PhaseMessage) {}
 
 func TestBenchmarkWritesReportsAfterPeerCrash(t *testing.T) {
 	peers := addresses(t, 4)

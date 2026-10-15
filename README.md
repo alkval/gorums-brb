@@ -27,6 +27,11 @@ Membership is fixed, with IDs 1 through n and n > 3f. The default fault bound is
 and sequence. PROPOSE, ECHO and READY are one-way multicasts, including self.
 Delivery is once per instance and need not follow sequence order.
 
+The optional `-optimistic` variant follows OptiBRB's four-phase optimistic path
+with rotating committees. It has no recovery or reputation system. It is intended
+for fault-free performance comparisons and does not provide BRB liveness or
+totality under arbitrary Byzantine faults. See [the variant description](internal/brb/OPTIMISTIC.md).
+
 Sender IDs are trusted. The controlled faults keep their own identities.
 Cryptographic peer verification awaits [Gorums #359](https://github.com/relab/gorums/pull/359).
 Failed sends to correct peers are not repaired.

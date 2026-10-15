@@ -40,6 +40,7 @@ func (p *faultyReplica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessag
 
 func (*faultyReplica) Echo(gorums.ServerContext, *brbv1.PhaseMessage)  {}
 func (*faultyReplica) Ready(gorums.ServerContext, *brbv1.PhaseMessage) {}
+func (*faultyReplica) QEcho(gorums.ServerContext, *brbv1.PhaseMessage) {}
 
 func equivocate(ctx context.Context, server *gorums.Server) error {
 	id := brbv1.BroadcastID_builder{Origin: server.NodeID(), Sequence: 1}.Build()

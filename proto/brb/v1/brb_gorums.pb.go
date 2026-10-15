@@ -81,11 +81,25 @@ func Ready(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessag
 	return gorumsimpl.Multicast(ctx, in, "brb.v1.Bracha.Ready")
 }
 
+// QEcho is a multicast call invoked on all nodes in the configuration in ctx.
+// It returns a one-way call handle; call Send to block until every send
+// completes and observe any send errors, or Async to dispatch without waiting.
+// Use gorums.MapRequest to send different messages to each node.
+//
+// Example:
+//
+//	err := QEcho(ctx, in).Send()
+//	h := QEcho(ctx, in).Async(); err := h.Wait()
+func QEcho(ctx *ConfigContext, in *PhaseMessage) *gorums.OnewayCall[*PhaseMessage] {
+	return gorumsimpl.Multicast(ctx, in, "brb.v1.Bracha.QEcho")
+}
+
 // Bracha is the server-side API for the Bracha Service
 type BrachaServer interface {
 	Propose(gorums.ServerContext, *PhaseMessage)
 	Echo(gorums.ServerContext, *PhaseMessage)
 	Ready(gorums.ServerContext, *PhaseMessage)
+	QEcho(gorums.ServerContext, *PhaseMessage)
 }
 
 func RegisterBrachaServer(srv *gorums.Server, impl BrachaServer) {
@@ -102,6 +116,11 @@ func RegisterBrachaServer(srv *gorums.Server, impl BrachaServer) {
 	srv.RegisterHandler("brb.v1.Bracha.Ready", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
 		req := gorums.AsProto[*PhaseMessage](in)
 		impl.Ready(ctx, req)
+		return nil, nil
+	})
+	srv.RegisterHandler("brb.v1.Bracha.QEcho", func(ctx gorums.ServerContext, in *gorums.Message) (*gorums.Message, error) {
+		req := gorums.AsProto[*PhaseMessage](in)
+		impl.QEcho(ctx, req)
 		return nil, nil
 	})
 }

@@ -26,12 +26,16 @@ func TestFourProcessesDeliverRepeatedBroadcasts(t *testing.T) {
 	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{{count: 3}})
 }
 
+func TestOptimisticFourProcessesDeliver(t *testing.T) {
+	testFourProcessesDeliver(t, []int{1, 2, 3, 4}, 0, []senderWorkload{{count: 4}, {count: 4}, {count: 4}, {count: 4}}, "-optimistic")
+}
+
 type senderWorkload struct {
 	count int
 }
 
 // The workloads belong to consecutive sender IDs, starting at 1.
-func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Duration, workloads []senderWorkload) {
+func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Duration, workloads []senderWorkload, extraArgs ...string) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("separate-process smoke test")
@@ -144,6 +148,7 @@ func testFourProcessesDeliver(t *testing.T, order []int, originDelay time.Durati
 			t.Fatal(err)
 		}
 		args := []string{"-id", strconv.Itoa(id), "-f", "1", "-peers", peers}
+		args = append(args, extraArgs...)
 		if id <= len(workloads) {
 			workload := workloads[id-1]
 			args = append(args, "-broadcast", "hello")

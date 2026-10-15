@@ -96,12 +96,13 @@ func (b0 BroadcastID_builder) Build() *BroadcastID {
 
 // PhaseMessage carries the value associated with a broadcast instance.
 type PhaseMessage struct {
-	state             protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_Id     *BroadcastID           `protobuf:"bytes,1,opt,name=id"`
-	xxx_hidden_Value  []byte                 `protobuf:"bytes,2,opt,name=value"`
-	xxx_hidden_Sender uint32                 `protobuf:"varint,3,opt,name=sender"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state                 protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Id         *BroadcastID           `protobuf:"bytes,1,opt,name=id"`
+	xxx_hidden_Value      []byte                 `protobuf:"bytes,2,opt,name=value"`
+	xxx_hidden_Sender     uint32                 `protobuf:"varint,3,opt,name=sender"`
+	xxx_hidden_Optimistic bool                   `protobuf:"varint,4,opt,name=optimistic"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *PhaseMessage) Reset() {
@@ -150,6 +151,13 @@ func (x *PhaseMessage) GetSender() uint32 {
 	return 0
 }
 
+func (x *PhaseMessage) GetOptimistic() bool {
+	if x != nil {
+		return x.xxx_hidden_Optimistic
+	}
+	return false
+}
+
 func (x *PhaseMessage) SetId(v *BroadcastID) {
 	x.xxx_hidden_Id = v
 }
@@ -163,6 +171,10 @@ func (x *PhaseMessage) SetValue(v []byte) {
 
 func (x *PhaseMessage) SetSender(v uint32) {
 	x.xxx_hidden_Sender = v
+}
+
+func (x *PhaseMessage) SetOptimistic(v bool) {
+	x.xxx_hidden_Optimistic = v
 }
 
 func (x *PhaseMessage) HasId() bool {
@@ -184,6 +196,8 @@ type PhaseMessage_builder struct {
 	// sender is trusted by the prototype. A future authenticated transport
 	// must bind this claim to the actual peer identity.
 	Sender uint32
+	// All members must run the same variant. False selects ordinary Bracha.
+	Optimistic bool
 }
 
 func (b0 PhaseMessage_builder) Build() *PhaseMessage {
@@ -193,6 +207,7 @@ func (b0 PhaseMessage_builder) Build() *PhaseMessage {
 	x.xxx_hidden_Id = b.Id
 	x.xxx_hidden_Value = b.Value
 	x.xxx_hidden_Sender = b.Sender
+	x.xxx_hidden_Optimistic = b.Optimistic
 	return m0
 }
 
@@ -203,15 +218,19 @@ const file_proto_brb_v1_brb_proto_rawDesc = "" +
 	"\x16proto/brb/v1/brb.proto\x12\x06brb.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\fgorums.proto\"A\n" +
 	"\vBroadcastID\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\rR\x06origin\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\x04R\bsequence\"a\n" +
+	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\x81\x01\n" +
 	"\fPhaseMessage\x12#\n" +
 	"\x02id\x18\x01 \x01(\v2\x13.brb.v1.BroadcastIDR\x02id\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\fR\x05value\x12\x16\n" +
-	"\x06sender\x18\x03 \x01(\rR\x06sender2\xc0\x01\n" +
+	"\x06sender\x18\x03 \x01(\rR\x06sender\x12\x1e\n" +
+	"\n" +
+	"optimistic\x18\x04 \x01(\bR\n" +
+	"optimistic2\xfd\x01\n" +
 	"\x06Bracha\x12=\n" +
 	"\aPropose\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12:\n" +
 	"\x04Echo\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12;\n" +
-	"\x05Ready\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01B6Z/github.com/alkval/gorums-brb/proto/brb/v1;brbv1\x92\x03\x02\b\x02b\beditionsp\xe9\a"
+	"\x05Ready\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12;\n" +
+	"\x05QEcho\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01B6Z/github.com/alkval/gorums-brb/proto/brb/v1;brbv1\x92\x03\x02\b\x02b\beditionsp\xe9\a"
 
 var file_proto_brb_v1_brb_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_proto_brb_v1_brb_proto_goTypes = []any{
@@ -224,11 +243,13 @@ var file_proto_brb_v1_brb_proto_depIdxs = []int32{
 	1, // 1: brb.v1.Bracha.Propose:input_type -> brb.v1.PhaseMessage
 	1, // 2: brb.v1.Bracha.Echo:input_type -> brb.v1.PhaseMessage
 	1, // 3: brb.v1.Bracha.Ready:input_type -> brb.v1.PhaseMessage
-	2, // 4: brb.v1.Bracha.Propose:output_type -> google.protobuf.Empty
-	2, // 5: brb.v1.Bracha.Echo:output_type -> google.protobuf.Empty
-	2, // 6: brb.v1.Bracha.Ready:output_type -> google.protobuf.Empty
-	4, // [4:7] is the sub-list for method output_type
-	1, // [1:4] is the sub-list for method input_type
+	1, // 4: brb.v1.Bracha.QEcho:input_type -> brb.v1.PhaseMessage
+	2, // 5: brb.v1.Bracha.Propose:output_type -> google.protobuf.Empty
+	2, // 6: brb.v1.Bracha.Echo:output_type -> google.protobuf.Empty
+	2, // 7: brb.v1.Bracha.Ready:output_type -> google.protobuf.Empty
+	2, // 8: brb.v1.Bracha.QEcho:output_type -> google.protobuf.Empty
+	5, // [5:9] is the sub-list for method output_type
+	1, // [1:5] is the sub-list for method input_type
 	1, // [1:1] is the sub-list for extension type_name
 	1, // [1:1] is the sub-list for extension extendee
 	0, // [0:1] is the sub-list for field type_name
