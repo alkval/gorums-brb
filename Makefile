@@ -12,10 +12,13 @@ fmt:
 	$(GO) fmt ./...
 
 generate:
-	$(GO) mod download github.com/relab/gorums
+	$(GO) mod download github.com/relab/gorums google.golang.org/protobuf
 	gorums_dir=$$($(GO) list -m -f '{{.Dir}}' github.com/relab/gorums) && \
+		protobuf_dir=$$($(GO) list -m -f '{{.Dir}}' google.golang.org/protobuf) && \
 		(cd "$$gorums_dir" && GOWORK=off $(GO) build -o "$(CURDIR)/.cache/tools/protoc-gen-gorums" ./cmd/protoc-gen-gorums) && \
+		(cd "$$protobuf_dir" && GOWORK=off $(GO) build -o "$(CURDIR)/.cache/tools/protoc-gen-go" ./cmd/protoc-gen-go) && \
 		protoc -I="$$gorums_dir:." \
+		--plugin=protoc-gen-go="$(CURDIR)/.cache/tools/protoc-gen-go" \
 		--plugin=protoc-gen-gorums="$(CURDIR)/.cache/tools/protoc-gen-gorums" \
 		--go_out=paths=source_relative:. \
 		--gorums_out=paths=source_relative:. \

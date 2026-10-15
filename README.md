@@ -17,8 +17,9 @@ make bench-linux
 
 The executable is `bin/brb`. The Linux build is `bin/brb-linux-amd64`.
 See [command usage](cmd/brb/README.md) for the terminal demo and sweep examples.
-Run `make generate` after changing the proto file. It uses the pinned Gorums
-generator and requires `protoc` and `protoc-gen-go` on PATH.
+Run `make generate` after changing the proto file. It builds both generators
+from the Gorums and protobuf versions in `go.mod`. Only `protoc` is required
+on PATH.
 
 ## Protocol and limits
 

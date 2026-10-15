@@ -6,7 +6,9 @@ marks the selected variant, and receivers reject mismatched variants.
 Each is a Gorums one-way multicast. The generated `.Send()` method waits for
 sends, not application delivery.
 
-Regenerate with `make generate`. Do not edit generated Go files.
+Regenerate with `make generate`. It builds the Go and Gorums generators from
+the module versions in `go.mod`, using the `protoc` compiler on PATH.
+Do not edit generated Go files.
 All replicas must use the same generated RPC names. Old binaries using
 `Broadcast.Send` are incompatible with this version.
 
