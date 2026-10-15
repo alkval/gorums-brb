@@ -10,7 +10,10 @@
 
 # Local coding-agent instructions
 /AGENTS.md
-/docs/
+
+# Private project notes, except the public protocol document
+/docs/*
+!/docs/Protocol.md
 
 # Experiment output
 /results/raw/

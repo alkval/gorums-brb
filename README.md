@@ -27,6 +27,8 @@ Membership is fixed, with IDs 1 through n and n > 3f. The default fault bound is
 `(n-1)/3`, with an explicit `-f` override. A broadcast is identified by its origin
 and sequence. PROPOSE, ECHO and READY are one-way multicasts, including self.
 Delivery is once per instance and need not follow sequence order.
+See the [protocol and system model](docs/Protocol.md) for the threshold reasoning,
+properties and implementation limits.
 
 The optional `-optimistic` variant follows OptiBRB's four-phase optimistic path
 with rotating committees. It has no recovery or reputation system. It is intended

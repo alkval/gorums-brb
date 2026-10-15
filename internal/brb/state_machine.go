@@ -1,4 +1,5 @@
 // Package brb implements Bracha's deterministic state transitions and transport.
+// See docs/Protocol.md in the repository for the system model and threshold reasoning.
 package brb
 
 import (
