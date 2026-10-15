@@ -252,13 +252,14 @@ func completionTimeout(n int) time.Duration {
 func awaitPeers(ctx context.Context, node *benchmarkNode, opts Options) error {
 	readyCtx, readyCancel := context.WithTimeout(ctx, startupTimeout(len(opts.Remotes)))
 	err := node.server.WaitForPeers(readyCtx, func(c gorums.Config) bool { return len(c) == len(opts.Remotes) })
-	if err == nil && opts.failFast {
+	if err == nil {
 		err = probePeers(readyCtx, node.server.PeerConfig())
 	}
 	close(node.probed)
-	if err == nil && opts.failFast {
+	if err == nil {
 		// Each peer's Start waits for its own probes. All replies therefore
-		// establish that the entire group has finished startup.
+		// establish that the entire group has finished its startup checks,
+		// so a connected but unready replica cannot accumulate a workload.
 		_, err = benchkit.Start(node.server.PeerConfig().Context(readyCtx), benchkit.StartRequest_builder{}.Build()).All()
 	}
 	readyCancel()
@@ -364,7 +365,7 @@ func (c readyControl) Start(ctx gorums.ServerContext, _ *benchkit.StartRequest) 
 }
 
 // A stream can appear connected before its first successful round trip. Verify
-// each outbound path before enabling fail-fast BRB sends. ClockSync is used only
+// each outbound path before beginning the workload. ClockSync is used only
 // as a harmless probe; its timestamp does not enter the latency measurements.
 func probePeers(ctx context.Context, config gorums.Config) error {
 	for {

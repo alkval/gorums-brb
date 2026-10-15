@@ -73,7 +73,10 @@ but does not itself prove a crash. Survivor success only establishes local
 completion. Benchkit profiling, rate ramps, per-call timeouts, buffer-size sweeps
 and stream deduplication are not supported by this command.
 
-Startup round-trip probes and a barrier precede fail-fast measurement. Startup
+Every benchmark run completes startup round-trip probes and a group barrier
+before measurement, including ordinary Bracha and optimistic runs. This prevents
+other origins from running ahead while a connected replica is still starting.
+The `-fail-fast` flag only changes transport error handling. Startup
 allows 30 seconds plus one second per replica. Completion allows 10 seconds plus
 100 ms per replica, followed by a one-second drain. These are outside measurement.
 
