@@ -74,3 +74,23 @@ maximum capacity, Byzantine fault tolerance, or measured bandwidth savings.
 Raw reports, provenance and analysis remain in the ignored `experiments/out/`
 directories `brb-comparison-barrier-2026-10-15` and
 `brb-seven-node-barrier-2026-10-15`.
+
+A separate comparison used clean source `b2a85c3` at n=10, f=3 and n=13, f=4,
+with the same payloads, worker counts and three ten-second repetitions. All
+48 trials produced the expected 552 reports. Optimistic throughput was 25–30%
+lower for 256-byte payloads and 17.8–49.5% higher for 4 KiB. Four Bracha trials
+were flagged degraded and remain included. Three also recorded host-wide TCP
+counter changes. All three Bracha trials in the largest-gain setting (n=13,
+two workers, 4 KiB) were flagged, so no unflagged comparison pair remains there.
+These results are stored separately in `brb-large-comparison-2026-10-15`.
+
+The largest throughput gain is not a matching reduction in delivery latency.
+Across the three thirteen-node, two-worker, 4 KiB runs, the mean of each trial's
+minimum/median origin completion ratio was 17.7% for Bracha and 97.9% for
+optimistic. Full-run, completion-weighted mean delivery latencies averaged
+17.360 and 16.597 ms. A worker also waits for the initial multicast to return,
+which can happen after its recorded delivery callback. The retained reports
+support a worker-budget estimate, not a direct measurement of send-blocking time.
+The follow-up analysis is in `per-origin-2026-10-21` under that result directory.
+Network bytes and NIC utilisation remain unmeasured. Sender identities were
+trusted in all runs, and the missing recovery guarantees are unchanged.
