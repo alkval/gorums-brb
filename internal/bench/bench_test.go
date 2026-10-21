@@ -496,14 +496,17 @@ func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	// With one replica, every completed broadcast sent one PROPOSE, ECHO and
-	// READY to itself and nothing remotely.
+	// READY to itself and nothing remotely. Sequences run from 1 to TotalOps,
+	// so the exact byte sum also covers sequence-varint growth.
 	ops := report.GetResults()[0].GetTotalOps()
-	size := proto.Size(brbv1.PhaseMessage_builder{
-		Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: 1}.Build(),
-		Value: make([]byte, 100), Sender: 1,
-	}.Build())
+	var wantBytes uint64
+	for seq := uint64(1); seq <= ops; seq++ {
+		wantBytes += uint64(proto.Size(brbv1.PhaseMessage_builder{
+			Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: seq}.Build(),
+			Value: make([]byte, 100), Sender: 1,
+		}.Build()))
+	}
 	for _, phase := range []string{"propose", "echo", "ready"} {
-		// Sequence numbers grow, so sizes vary by at most a few bytes per message.
 		var calls, remote, remoteBytes, local, localBytes uint64
 		line := fmt.Sprintf("brb bench: node 1 traffic phase=%s ", phase)
 		i := strings.Index(logged, line)
@@ -514,10 +517,9 @@ func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
 			&calls, &remote, &remoteBytes, &local, &localBytes); err != nil {
 			t.Fatal(err)
 		}
-		if calls != ops || local != ops || remote != 0 || remoteBytes != 0 ||
-			localBytes < ops*uint64(size) || localBytes > ops*uint64(size+8) {
-			t.Fatalf("%s: calls=%d local=%d remote=%d bytes=%d/%d, want %d calls of about %d bytes",
-				phase, calls, local, remote, remoteBytes, localBytes, ops, size)
+		if calls != ops || local != ops || remote != 0 || remoteBytes != 0 || localBytes != wantBytes {
+			t.Fatalf("%s: calls=%d local=%d remote=%d bytes=%d/%d, want %d calls and %d local bytes",
+				phase, calls, local, remote, remoteBytes, localBytes, ops, wantBytes)
 		}
 	}
 	if !strings.Contains(logged, "brb bench: node 1 traffic phase=qecho calls=0 ") {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -354,6 +355,9 @@ func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
 	if got := node.readyFailures.Load(); got != 1 {
 		t.Fatalf("READY failure count = %d, want 1", got)
 	}
+	if got := node.Traffic(PhaseReady); got.Calls != 1 || got.RemoteMessages != 1 || got.LocalMessages != 1 {
+		t.Fatalf("failed READY attempt counted as %+v, want one call to two recipients", got)
+	}
 	node.performActions([]Action{{Type: ActionMulticastEcho, ID: id, Value: value}})
 	if got := node.echoFailures.Load(); got != 1 {
 		t.Fatalf("ECHO failure count = %d, want 1", got)
@@ -465,5 +469,85 @@ func TestGorumsTrafficAfterDelivery(t *testing.T) {
 		if node.Traffic(PhaseQEcho) != (Traffic{}) {
 			t.Fatalf("node %d counted Q-ECHO in Bracha", i+1)
 		}
+	}
+}
+
+// A handler that is already running when the server stops can still reach a
+// send, because Server.Stop does not wait for it. The control case shows the
+// totals changing after Stop. FinalizeTraffic must keep them fixed.
+func TestTrafficCutoffIgnoresHandlerOverlappingShutdown(t *testing.T) {
+	for _, finalize := range []bool{false, true} {
+		t.Run(fmt.Sprintf("finalize=%t", finalize), func(t *testing.T) {
+			entered, done := make(chan struct{}, 1), make(chan struct{}, 1)
+			observe := gorums.WithServerInterceptors(func(ctx gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
+				if msg.GetMethod() != "brb.v1.Bracha.Propose" {
+					return next(ctx, msg)
+				}
+				entered <- struct{}{}
+				out, err := next(ctx, msg)
+				done <- struct{}{}
+				return out, err
+			})
+			nodes, systems, _ := localNodes(t, 1, 0, gorums.WithLocalServerOptions(observe))
+			serve(t, systems)
+			node := nodes[0]
+			// Hold the PROPOSE handler inside StateMachine.Handle until after
+			// shutdown. The test sends PROPOSE directly, so it is not counted.
+			node.machine.mu.Lock()
+			id := BroadcastID{1, 1}
+			if err := brbv1.Propose(node.config.Context(t.Context()), node.message(id, []byte("v"))).Send(); err != nil {
+				node.machine.mu.Unlock()
+				t.Fatal(err)
+			}
+			<-entered
+			systems[0].Stop()
+			if finalize {
+				node.FinalizeTraffic()
+			}
+			before := node.Traffic(PhaseEcho)
+			node.machine.mu.Unlock()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("held handler did not finish")
+			}
+			after := node.Traffic(PhaseEcho)
+			if finalize && after != before {
+				t.Fatalf("ECHO traffic changed after the cutoff: %+v then %+v", before, after)
+			}
+			if !finalize && after.Calls != before.Calls+1 {
+				t.Fatalf("control: ECHO traffic %+v then %+v, want one more call after Stop", before, after)
+			}
+		})
+	}
+}
+
+func TestTrafficSnapshotsStayConsistentDuringConcurrentSends(t *testing.T) {
+	nodes, _, _ := localNodes(t, 4, 1)
+	node := nodes[0]
+	msg := node.message(BroadcastID{1, 1}, []byte("value"))
+	size := uint64(proto.Size(msg))
+	consistent := func(s Traffic) bool {
+		return s.RemoteMessages == 3*s.Calls && s.LocalMessages == s.Calls &&
+			s.RemoteBytes == s.RemoteMessages*size && s.LocalBytes == s.LocalMessages*size
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			for range 2000 {
+				node.recordSend(PhaseEcho, node.config, msg)
+			}
+		})
+	}
+	for range 200 {
+		if s := node.Traffic(PhaseEcho); !consistent(s) {
+			t.Fatalf("snapshot mixes partial updates: %+v", s)
+		}
+	}
+	node.FinalizeTraffic()
+	final := node.Traffic(PhaseEcho)
+	wg.Wait()
+	if got := node.Traffic(PhaseEcho); got != final || !consistent(final) {
+		t.Fatalf("final traffic %+v, later %+v", final, got)
 	}
 }
