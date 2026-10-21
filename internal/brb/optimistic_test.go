@@ -287,6 +287,22 @@ func TestOptimisticGorumsDelivery(t *testing.T) {
 			}
 		}
 	}
+	// Delivery needs a vote from every committee member, so all 16 broadcasts
+	// have counted Q=3 ECHO, f+1=2 Q-ECHO and 2f+1=3 READY calls. Committee
+	// sends reach f+1 or 2f+1 recipients, and READY reaches all four.
+	for phase, want := range map[Phase][2]uint64{PhaseEcho: {48, 2}, PhaseQEcho: {32, 3}, PhaseReady: {48, 4}} {
+		var calls uint64
+		for i, node := range nodes {
+			got := node.Traffic(phase)
+			if got.RemoteMessages+got.LocalMessages != want[1]*got.Calls {
+				t.Fatalf("node %d phase %d sent %+v, want %d recipients per call", i+1, phase, got, want[1])
+			}
+			calls += got.Calls
+		}
+		if calls != want[0] {
+			t.Fatalf("phase %d calls = %d, want %d", phase, calls, want[0])
+		}
+	}
 }
 
 func TestRejectMismatchedVariant(t *testing.T) {

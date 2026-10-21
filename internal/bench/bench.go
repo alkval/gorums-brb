@@ -154,6 +154,7 @@ func Run(parent context.Context, opts Options) error {
 	if err := node.replica.WindowError(); err != nil {
 		return fmt.Errorf("brb bench: invalid run: %w", err)
 	}
+	logTraffic(opts.selfID, node.replica)
 	label := fmt.Sprintf("node %d f=%d", opts.selfID, opts.f)
 	if opts.optimistic {
 		label += " optimistic=true"
@@ -335,6 +336,20 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 		return nil, 0, fmt.Errorf("brb bench: incomplete run: failed=%d, completed=%d", results[0].GetFailedOps(), results[0].GetTotalOps())
 	}
 	return results, sendFailures.Load(), nil
+}
+
+// logTraffic records attempted protocol sends once per phase. Sweep keeps each
+// node's stderr in the per-run log, so byte accounting needs no extra result
+// file. The totals cover the whole run, including the final drain.
+func logTraffic(selfID uint32, replica *brb.Replica) {
+	for _, p := range []struct {
+		name  string
+		phase brb.Phase
+	}{{"propose", brb.PhasePropose}, {"echo", brb.PhaseEcho}, {"ready", brb.PhaseReady}, {"qecho", brb.PhaseQEcho}} {
+		t := replica.Traffic(p.phase)
+		benchkit.Printf("brb bench: node %d traffic phase=%s calls=%d remote_msgs=%d remote_bytes=%d local_msgs=%d local_bytes=%d\n",
+			selfID, p.name, t.Calls, t.RemoteMessages, t.RemoteBytes, t.LocalMessages, t.LocalBytes)
+	}
 }
 
 func waitGrace(ctx context.Context, duration time.Duration) error {
