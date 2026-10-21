@@ -167,9 +167,22 @@ brb bench: node 3 traffic phase=echo calls=1203 remote_msgs=7218 remote_bytes=..
 `calls` counts multicast calls. Messages and bytes count each recipient
 separately. Remote messages go to other replicas, and local messages are sends
 to the replica itself, which the pinned Gorums runtime serves in-process.
-Bytes are marshalled `PhaseMessage` sizes. They exclude the Gorums envelope,
-gRPC and HTTP/2 framing, and TCP/IP headers, so they understate wire bytes.
-Counts are attempted sends, including failed ones, and cover the whole run,
-including the final drain. To compare variants, divide the group's summed
-remote bytes by its summed origin completions. Faulty and failed replicas print
-no traffic lines, so use these totals only for complete fault-free runs.
+These are attempted protobuf-message bytes, not measured wire bytes. Gorums
+envelopes, gRPC and HTTP/2 framing, TCP/IP headers and retransmissions are
+excluded. Failed attempts are counted even if nothing was transmitted.
+
+Counting starts when the replica is created and stops at a cutoff taken after
+the run context is cancelled and the server has stopped. A handler that was
+still running at shutdown may attempt a send after that, but it is not counted,
+so the logged totals are final. They cover the whole run, including the final
+drain.
+
+The comparison metric is attempted protocol-message bytes per origin
+completion: `sum(remote_bytes) / sum(TotalOps)` over all replicas of one trial.
+Use the untrimmed `TotalOps` from each report, not completions from sweep's
+trimmed analysis, because the traffic totals are untrimmed. Use only complete
+fault-free trials in which every expected node report and all its traffic lines
+are present. Traffic lines are printed before the report is written, so their
+presence alone does not show that a replica succeeded. The metric does
+not measure NIC utilisation or actual wire traffic, and it alone cannot show
+that bandwidth caused a performance difference.

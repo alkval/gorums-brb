@@ -9,6 +9,7 @@ import (
 	"github.com/relab/gorums"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 func optimisticMachine(t *testing.T, n, f int, self ProcessID) *StateMachine {
@@ -287,20 +288,51 @@ func TestOptimisticGorumsDelivery(t *testing.T) {
 			}
 		}
 	}
-	// Delivery needs a vote from every committee member, so all 16 broadcasts
-	// have counted Q=3 ECHO, f+1=2 Q-ECHO and 2f+1=3 READY calls. Committee
-	// sends reach f+1 or 2f+1 recipients, and READY reaches all four.
-	for phase, want := range map[Phase][2]uint64{PhaseEcho: {48, 2}, PhaseQEcho: {32, 3}, PhaseReady: {48, 4}} {
-		var calls uint64
-		for i, node := range nodes {
-			got := node.Traffic(phase)
-			if got.RemoteMessages+got.LocalMessages != want[1]*got.Calls {
-				t.Fatalf("node %d phase %d sent %+v, want %d recipients per call", i+1, phase, got, want[1])
+	// Delivery needs a vote from every committee member, so every assigned
+	// sender has counted its PROPOSE, ECHO, Q-ECHO and READY. Message sizes are
+	// equal here because all IDs and senders encode in one varint byte.
+	size := uint64(proto.Size(nodes[0].message(BroadcastID{1, 1}, []byte("hello"))))
+	q := (4+1)/2 + 1
+	want := make([][PhaseQEcho + 1]Traffic, 4)
+	add := func(sender ProcessID, phase Phase, id BroadcastID, recipients int) {
+		w := &want[sender-1][phase]
+		w.Calls++
+		for p := 1; p <= 4; p++ {
+			if recipients < 4 && !nodes[0].machine.committeeContains(id, ProcessID(p), recipients) {
+				continue
 			}
-			calls += got.Calls
+			if ProcessID(p) == sender {
+				w.LocalMessages++
+				w.LocalBytes += size
+			} else {
+				w.RemoteMessages++
+				w.RemoteBytes += size
+			}
 		}
-		if calls != want[0] {
-			t.Fatalf("phase %d calls = %d, want %d", phase, calls, want[0])
+	}
+	for origin := ProcessID(1); origin <= 4; origin++ {
+		for seq := uint64(1); seq <= 4; seq++ {
+			id := BroadcastID{origin, seq}
+			add(origin, PhasePropose, id, 4)
+			for p := ProcessID(1); p <= 4; p++ {
+				m := nodes[0].machine
+				if m.committeeContains(id, p, q) {
+					add(p, PhaseEcho, id, 2)
+				}
+				if m.committeeContains(id, p, 2) {
+					add(p, PhaseQEcho, id, 3)
+				}
+				if m.committeeContains(id, p, 3) {
+					add(p, PhaseReady, id, 4)
+				}
+			}
+		}
+	}
+	for i, node := range nodes {
+		for phase := PhasePropose; phase <= PhaseQEcho; phase++ {
+			if got := node.Traffic(phase); got != want[i][phase] {
+				t.Fatalf("node %d phase %d traffic = %+v, want %+v", i+1, phase, got, want[i][phase])
+			}
 		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"sync"
 	"sync/atomic"
 
 	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
@@ -30,10 +31,6 @@ type Traffic struct {
 	LocalBytes     uint64
 }
 
-type trafficCounter struct {
-	calls, remoteMessages, remoteBytes, localMessages, localBytes atomic.Uint64
-}
-
 // Replica connects the state machine to Gorums multicast.
 // Sender IDs are trusted for now. Authentication is deliberately deferred.
 type Replica struct {
@@ -46,7 +43,10 @@ type Replica struct {
 	echoFailures   atomic.Uint64
 	readyFailures  atomic.Uint64
 	qEchoFailures  atomic.Uint64
-	traffic        [PhaseQEcho + 1]trafficCounter // indexed by Phase
+	// One mutex keeps each multicast's counts and every snapshot consistent.
+	trafficMu    sync.Mutex
+	trafficFinal bool
+	traffic      [PhaseQEcho + 1]Traffic // indexed by Phase
 }
 
 // NewReplica registers the adapter before server.Serve. All processes must
@@ -134,28 +134,37 @@ func (n *Replica) recordSend(phase Phase, recipients gorums.Config, msg *brbv1.P
 		}
 	}
 	remote := uint64(len(recipients)) - local
-	c := &n.traffic[phase]
-	c.calls.Add(1)
-	c.remoteMessages.Add(remote)
-	c.remoteBytes.Add(remote * size)
-	c.localMessages.Add(local)
-	c.localBytes.Add(local * size)
+	n.trafficMu.Lock()
+	defer n.trafficMu.Unlock()
+	if n.trafficFinal {
+		return
+	}
+	t := &n.traffic[phase]
+	t.Calls++
+	t.RemoteMessages += remote
+	t.RemoteBytes += remote * size
+	t.LocalMessages += local
+	t.LocalBytes += local * size
 }
 
-// Traffic reports attempted sends for one phase. Read it after cancelling the
-// run and stopping the server to obtain final totals.
+// FinalizeTraffic ends accounting: multicasts recorded afterwards are not
+// counted. Server.Stop does not wait for running handlers, so a handler can
+// still reach a send after Stop returns. Call this after cancelling the run
+// and stopping the server. Traffic then returns fixed totals.
+func (n *Replica) FinalizeTraffic() {
+	n.trafficMu.Lock()
+	defer n.trafficMu.Unlock()
+	n.trafficFinal = true
+}
+
+// Traffic reports attempted sends recorded for one phase.
 func (n *Replica) Traffic(phase Phase) Traffic {
 	if phase < PhasePropose || phase > PhaseQEcho {
 		return Traffic{}
 	}
-	c := &n.traffic[phase]
-	return Traffic{
-		Calls:          c.calls.Load(),
-		RemoteMessages: c.remoteMessages.Load(),
-		RemoteBytes:    c.remoteBytes.Load(),
-		LocalMessages:  c.localMessages.Load(),
-		LocalBytes:     c.localBytes.Load(),
-	}
+	n.trafficMu.Lock()
+	defer n.trafficMu.Unlock()
+	return n.traffic[phase]
 }
 
 func (n *Replica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {

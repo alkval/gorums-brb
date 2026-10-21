@@ -340,8 +340,10 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 
 // logTraffic records attempted protocol sends once per phase. Sweep keeps each
 // node's stderr in the per-run log, so byte accounting needs no extra result
-// file. The totals cover the whole run, including the final drain.
+// file. Call it after cancelling the run and stopping the server. The totals
+// cover the whole run, including the final drain, up to that cutoff.
 func logTraffic(selfID uint32, replica *brb.Replica) {
+	replica.FinalizeTraffic()
 	for _, p := range []struct {
 		name  string
 		phase brb.Phase
