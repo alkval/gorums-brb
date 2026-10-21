@@ -287,8 +287,9 @@ func TestGorumsRejectsMissingConfiguration(t *testing.T) {
 	}
 	sys := gorums.NewServer()
 	defer sys.Stop()
-	//nolint:staticcheck // Deliberately exercise rejection of a nil context.
-	if _, err := NewReplica(nil, sys, 0, nil); err == nil {
+	// A nil Context variable exercises rejection without passing a literal nil.
+	var missing context.Context
+	if _, err := NewReplica(missing, sys, 0, nil); err == nil {
 		t.Fatal("accepted nil context")
 	}
 	if _, err := NewReplica(t.Context(), sys, 0, nil); err == nil {
