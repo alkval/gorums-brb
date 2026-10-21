@@ -185,7 +185,7 @@ func TestOptimisticReorderedBroadcasts(t *testing.T) {
 				for seq := uint64(1); seq <= 3; seq++ {
 					id := BroadcastID{ProcessID(origin), seq}
 					for p := 1; p <= n; p++ {
-						queue = append(queue, message{id.Origin, ProcessID(p), PhasePropose, id, []byte(fmt.Sprint(id))})
+						queue = append(queue, message{id.Origin, ProcessID(p), PhasePropose, id, fmt.Append(nil, id)})
 					}
 				}
 			}
