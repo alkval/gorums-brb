@@ -18,6 +18,7 @@ import (
 	"github.com/relab/gorums/benchkit"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -457,5 +458,69 @@ func TestBenchmarkRequiresDeliveryBeforeReporting(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("undelivered run left a report: %v", err)
+	}
+}
+
+func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
+	peer := addresses(t, 1)[0]
+	path := filepath.Join(t.TempDir(), "result.binpb")
+	opts, err := ParseOptions([]string{"-self=" + peer, "-remotes=" + peer, "-f=0",
+		"-output=" + path, "-time=50ms", "-workers=2", "-payload=100"}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// benchkit.Printf writes to os.Stderr, which sweep keeps in its node logs.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr := os.Stderr
+	os.Stderr = w
+	output := make(chan string)
+	go func() {
+		var b strings.Builder
+		_, _ = io.Copy(&b, r)
+		output <- b.String()
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	runErr := Run(ctx, opts)
+	os.Stderr = stderr
+	_ = w.Close()
+	logged := <-output
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	report, err := benchkit.LoadReport(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// With one replica, every completed broadcast sent one PROPOSE, ECHO and
+	// READY to itself and nothing remotely.
+	ops := report.GetResults()[0].GetTotalOps()
+	size := proto.Size(brbv1.PhaseMessage_builder{
+		Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: 1}.Build(),
+		Value: make([]byte, 100), Sender: 1,
+	}.Build())
+	for _, phase := range []string{"propose", "echo", "ready"} {
+		// Sequence numbers grow, so sizes vary by at most a few bytes per message.
+		var calls, remote, remoteBytes, local, localBytes uint64
+		line := fmt.Sprintf("brb bench: node 1 traffic phase=%s ", phase)
+		i := strings.Index(logged, line)
+		if i < 0 {
+			t.Fatalf("missing %s traffic line in:\n%s", phase, logged)
+		}
+		if _, err := fmt.Sscanf(logged[i+len(line):], "calls=%d remote_msgs=%d remote_bytes=%d local_msgs=%d local_bytes=%d",
+			&calls, &remote, &remoteBytes, &local, &localBytes); err != nil {
+			t.Fatal(err)
+		}
+		if calls != ops || local != ops || remote != 0 || remoteBytes != 0 ||
+			localBytes < ops*uint64(size) || localBytes > ops*uint64(size+8) {
+			t.Fatalf("%s: calls=%d local=%d remote=%d bytes=%d/%d, want %d calls of about %d bytes",
+				phase, calls, local, remote, remoteBytes, localBytes, ops, size)
+		}
+	}
+	if !strings.Contains(logged, "brb bench: node 1 traffic phase=qecho calls=0 ") {
+		t.Fatalf("Bracha run logged Q-ECHO traffic:\n%s", logged)
 	}
 }

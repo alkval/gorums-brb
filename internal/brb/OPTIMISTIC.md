@@ -48,7 +48,10 @@ including self, are n+2n² for Bracha and
 n+Q(f+1)+(f+1)(2f+1)+n(2f+1) for this variant. For n=4 and f=1, these
 full-phase counts are 36 and 28. Bracha can deliver before processing some
 earlier-phase messages and then ignore them, so its actual send count can be
-lower. These formulas are not measurements of traffic or TCP bytes. The
+lower. These formulas are not measurements of traffic or TCP bytes. Benchmark
+mode now logs attempted protocol sends and marshalled message bytes per phase,
+described in the [command guide](../../cmd/brb/README.md#protocol-traffic).
+Those counts still exclude transport framing and headers. The
 optimistic path also adds a sequential phase, so fewer sends do not guarantee
 lower latency or higher throughput.
 

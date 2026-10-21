@@ -15,6 +15,7 @@ import (
 	"github.com/relab/gorums"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestMulticastFailureLogging(t *testing.T) {
@@ -412,5 +413,57 @@ func TestWindowErrorPersistsAfterSuccessfulDelivery(t *testing.T) {
 	awaitDelivery(t, deliveries[0], BroadcastID{1, 1}, "valid")
 	if !errors.Is(nodes[0].WindowError(), ErrOutsideWindow) {
 		t.Fatal("successful delivery cleared the window error")
+	}
+}
+
+func TestTrafficSeparatesLocalAndRemoteSends(t *testing.T) {
+	nodes, _, _ := localNodes(t, 4, 1)
+	node := nodes[0]
+	msg := node.message(BroadcastID{1, 1}, []byte("value"))
+	size := uint64(proto.Size(msg))
+	node.recordSend(PhaseEcho, node.config, msg)
+	node.recordSend(PhaseEcho, node.config[1:3], msg) // excludes self
+	want := Traffic{Calls: 2, RemoteMessages: 5, RemoteBytes: 5 * size, LocalMessages: 1, LocalBytes: size}
+	if got := node.Traffic(PhaseEcho); got != want {
+		t.Fatalf("ECHO traffic = %+v, want %+v", got, want)
+	}
+	for _, phase := range []Phase{0, PhasePropose, PhaseReady, PhaseQEcho, PhaseQEcho + 1} {
+		if got := node.Traffic(phase); got != (Traffic{}) {
+			t.Fatalf("phase %d traffic = %+v, want zero", phase, got)
+		}
+	}
+}
+
+func TestGorumsTrafficAfterDelivery(t *testing.T) {
+	nodes, systems, deliveries := localNodes(t, 4, 1)
+	serve(t, systems)
+	id := BroadcastID{Origin: 1, Sequence: 1}
+	value := []byte("hello")
+	if err := nodes[0].Broadcast(id.Sequence, value); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range deliveries {
+		awaitDelivery(t, ch, id, "hello")
+	}
+	size := uint64(proto.Size(nodes[0].message(id, value)))
+	perCall := Traffic{Calls: 1, RemoteMessages: 3, RemoteBytes: 3 * size, LocalMessages: 1, LocalBytes: size}
+	if got := nodes[0].Traffic(PhasePropose); got != perCall {
+		t.Fatalf("origin PROPOSE traffic = %+v, want %+v", got, perCall)
+	}
+	for i, node := range nodes {
+		// READY is counted before the delivery it enables. An ECHO may still be
+		// in progress, or skipped if the replica delivered before PROPOSE arrived.
+		if got := node.Traffic(PhaseReady); got != perCall {
+			t.Fatalf("node %d READY traffic = %+v, want %+v", i+1, got, perCall)
+		}
+		if got := node.Traffic(PhaseEcho); got != perCall && got != (Traffic{}) {
+			t.Fatalf("node %d ECHO traffic = %+v, want zero or %+v", i+1, got, perCall)
+		}
+		if i != 0 && node.Traffic(PhasePropose) != (Traffic{}) {
+			t.Fatalf("node %d counted a PROPOSE it did not send", i+1)
+		}
+		if node.Traffic(PhaseQEcho) != (Traffic{}) {
+			t.Fatalf("node %d counted Q-ECHO in Bracha", i+1)
+		}
 	}
 }

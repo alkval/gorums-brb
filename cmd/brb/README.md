@@ -154,3 +154,22 @@ These totals are separate from origin completions: a broadcast can still
 deliver despite a failed send to a faulty replica. Other errors, including
 receive-window violations, are still logged normally. Abruptly killed processes
 cannot print a shutdown summary.
+
+## Protocol traffic
+
+Before writing its report, each valid benchmark replica prints one line per
+phase, which sweep keeps in the per-run node log:
+
+```text
+brb bench: node 3 traffic phase=echo calls=1203 remote_msgs=7218 remote_bytes=... local_msgs=1203 local_bytes=...
+```
+
+`calls` counts multicast calls. Messages and bytes count each recipient
+separately. Remote messages go to other replicas, and local messages are sends
+to the replica itself, which the pinned Gorums runtime serves in-process.
+Bytes are marshalled `PhaseMessage` sizes. They exclude the Gorums envelope,
+gRPC and HTTP/2 framing, and TCP/IP headers, so they understate wire bytes.
+Counts are attempted sends, including failed ones, and cover the whole run,
+including the final drain. To compare variants, divide the group's summed
+remote bytes by its summed origin completions. Faulty and failed replicas print
+no traffic lines, so use these totals only for complete fault-free runs.

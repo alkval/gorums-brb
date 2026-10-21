@@ -8,12 +8,30 @@ import (
 
 	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
+	"google.golang.org/protobuf/proto"
 )
 
 // Delivery is a value delivered by this process.
 type Delivery struct {
 	ID    BroadcastID
 	Value []byte
+}
+
+// Traffic counts the protocol messages this replica asked Gorums to send in one
+// phase. Bytes are marshalled PhaseMessage sizes. They exclude the Gorums
+// envelope, gRPC and HTTP/2 framing, and TCP/IP headers. Local messages are
+// sends to this replica itself, which the pinned Gorums runtime handles
+// in-process. Counts are attempts: failed sends are also counted here.
+type Traffic struct {
+	Calls          uint64 // multicast calls
+	RemoteMessages uint64
+	RemoteBytes    uint64
+	LocalMessages  uint64
+	LocalBytes     uint64
+}
+
+type trafficCounter struct {
+	calls, remoteMessages, remoteBytes, localMessages, localBytes atomic.Uint64
 }
 
 // Replica connects the state machine to Gorums multicast.
@@ -28,6 +46,7 @@ type Replica struct {
 	echoFailures   atomic.Uint64
 	readyFailures  atomic.Uint64
 	qEchoFailures  atomic.Uint64
+	traffic        [PhaseQEcho + 1]trafficCounter // indexed by Phase
 }
 
 // NewReplica registers the adapter before server.Serve. All processes must
@@ -94,7 +113,49 @@ func (n *Replica) Broadcast(sequence uint64, value []byte) error {
 	if err := n.machine.reserve(n.ctx, id); err != nil {
 		return err
 	}
-	return brbv1.Propose(n.config.Context(n.ctx), n.message(id, value)).Send()
+	return n.multicast(PhasePropose, n.config, n.message(id, value), brbv1.Propose)
+}
+
+type multicastFunc func(*brbv1.ConfigContext, *brbv1.PhaseMessage) *gorums.OnewayCall[*brbv1.PhaseMessage]
+
+func (n *Replica) multicast(phase Phase, recipients gorums.Config, msg *brbv1.PhaseMessage, call multicastFunc) error {
+	n.recordSend(phase, recipients, msg)
+	return call(recipients.Context(n.ctx), msg).Send()
+}
+
+// recordSend counts one attempted multicast before it is sent. Computing the
+// size once per call keeps the cost independent of the number of recipients.
+func (n *Replica) recordSend(phase Phase, recipients gorums.Config, msg *brbv1.PhaseMessage) {
+	size := uint64(proto.Size(msg))
+	var local uint64
+	for _, peer := range recipients {
+		if peer.ID() == uint32(n.self) {
+			local++
+		}
+	}
+	remote := uint64(len(recipients)) - local
+	c := &n.traffic[phase]
+	c.calls.Add(1)
+	c.remoteMessages.Add(remote)
+	c.remoteBytes.Add(remote * size)
+	c.localMessages.Add(local)
+	c.localBytes.Add(local * size)
+}
+
+// Traffic reports attempted sends for one phase. Read it after cancelling the
+// run and stopping the server to obtain final totals.
+func (n *Replica) Traffic(phase Phase) Traffic {
+	if phase < PhasePropose || phase > PhaseQEcho {
+		return Traffic{}
+	}
+	c := &n.traffic[phase]
+	return Traffic{
+		Calls:          c.calls.Load(),
+		RemoteMessages: c.remoteMessages.Load(),
+		RemoteBytes:    c.remoteBytes.Load(),
+		LocalMessages:  c.localMessages.Load(),
+		LocalBytes:     c.localBytes.Load(),
+	}
 }
 
 func (n *Replica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
@@ -203,11 +264,11 @@ func (n *Replica) performActions(actions []Action) {
 		var err error
 		switch action.Type {
 		case ActionMulticastEcho:
-			err = brbv1.Echo(n.recipients(action).Context(n.ctx), n.message(action.ID, action.Value)).Send()
+			err = n.multicast(PhaseEcho, n.recipients(action), n.message(action.ID, action.Value), brbv1.Echo)
 		case ActionMulticastReady:
-			err = brbv1.Ready(n.config.Context(n.ctx), n.message(action.ID, action.Value)).Send()
+			err = n.multicast(PhaseReady, n.config, n.message(action.ID, action.Value), brbv1.Ready)
 		case ActionMulticastQEcho:
-			err = brbv1.QEcho(n.recipients(action).Context(n.ctx), n.message(action.ID, action.Value)).Send()
+			err = n.multicast(PhaseQEcho, n.recipients(action), n.message(action.ID, action.Value), brbv1.QEcho)
 		case ActionDeliver:
 			if n.onDeliver != nil {
 				n.onDeliver(Delivery{ID: action.ID, Value: action.Value})
