@@ -51,19 +51,22 @@ type Action struct {
 	Type  ActionType
 	ID    BroadcastID
 	Value []byte
+	// Digest replaces Value in READY actions of the READY-digest variant.
+	Digest []byte
 }
 
 // StateMachine owns at most WindowSize instances per origin. A contiguous
 // delivered prefix prevents duplicate delivery without retaining every ID.
 type StateMachine struct {
-	mu         sync.Mutex
-	n          int
-	f          int
-	instances  map[BroadcastID]*instance
-	delivered  map[ProcessID]uint64
-	changed    chan struct{}
-	optimistic bool
-	self       ProcessID
+	mu          sync.Mutex
+	n           int
+	f           int
+	instances   map[BroadcastID]*instance
+	delivered   map[ProcessID]uint64
+	changed     chan struct{}
+	optimistic  bool
+	readyDigest bool // READY carries a SHA-256 digest instead of the value
+	self        ProcessID
 }
 
 type instance struct {
@@ -75,6 +78,10 @@ type instance struct {
 	echoes    votes
 	readies   votes
 	qEchoes   votes
+	// READY-digest variant only: whether the origin's PROPOSE was accepted, and
+	// the values received in PROPOSE and ECHO, keyed by their digests.
+	proposed bool
+	payloads map[string][]byte
 }
 
 // Keep only the first vote from each sender in each phase. A correct sender
@@ -125,8 +132,16 @@ func NewStateMachine(n, f int) (*StateMachine, error) {
 
 // Handle records one protocol message and returns the actions newly enabled by
 // it. Messages are counted by distinct logical sender. The current prototype
-// expects the transport adapter to provide that sender identity.
+// expects the transport adapter to provide that sender identity. In the
+// READY-digest variant, READY votes go through HandleReadyDigest instead.
 func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value []byte) ([]Action, error) {
+	if m.readyDigest && phase == PhaseReady {
+		return nil, errors.New("brb: READY carries a digest in this variant")
+	}
+	return m.handle(from, phase, id, value, nil)
+}
+
+func (m *StateMachine) handle(from ProcessID, phase Phase, id BroadcastID, value, digest []byte) ([]Action, error) {
 	if from == 0 || uint64(from) > uint64(m.n) {
 		return nil, fmt.Errorf("brb: sender ID %d is outside membership 1..%d", from, m.n)
 	}
@@ -165,6 +180,9 @@ func (m *StateMachine) Handle(from ProcessID, phase Phase, id BroadcastID, value
 	}
 	if state.delivered {
 		return nil, nil
+	}
+	if m.readyDigest {
+		return m.handleDigest(state, from, phase, id, value, digest), nil
 	}
 
 	var actions []Action

@@ -252,10 +252,17 @@ type event struct {
 
 func simulate(t *testing.T, n, f int, correct []ProcessID, queue []event, seed int64) map[ProcessID]string {
 	t.Helper()
+	return simulateWith(t, NewStateMachine, n, f, correct, queue, seed)
+}
+
+// simulateWith runs the simulation for machines built by newMachine. In the
+// READY-digest variant, READY events carry a digest in place of the value.
+func simulateWith(t *testing.T, newMachine func(n, f int) (*StateMachine, error), n, f int, correct []ProcessID, queue []event, seed int64) map[ProcessID]string {
+	t.Helper()
 	queue = append([]event(nil), queue...)
 	machines := map[ProcessID]*StateMachine{}
 	for _, id := range correct {
-		m, err := NewStateMachine(n, f)
+		m, err := newMachine(n, f)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -285,7 +292,15 @@ func simulate(t *testing.T, n, f int, correct []ProcessID, queue []event, seed i
 		}
 		repeats := 1 + rng.Intn(2)
 		for range repeats {
-			actions := handle(t, m, e.from, e.phase, e.id, e.value)
+			var actions []Action
+			if m.readyDigest && e.phase == PhaseReady {
+				var err error
+				if actions, err = m.HandleReadyDigest(e.from, e.id, []byte(e.value)); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				actions = handle(t, m, e.from, e.phase, e.id, e.value)
+			}
 			for _, a := range actions {
 				key := actionKey{e.to, a.Type, a.ID}
 				if emitted[key] {
@@ -296,12 +311,15 @@ func simulate(t *testing.T, n, f int, correct []ProcessID, queue []event, seed i
 					delivered[e.to] = string(a.Value)
 					continue
 				}
-				phase := PhaseEcho
+				phase, payload := PhaseEcho, a.Value
 				if a.Type == ActionMulticastReady {
 					phase = PhaseReady
+					if a.Digest != nil {
+						payload = a.Digest
+					}
 				}
 				for _, to := range correct {
-					queue = append(queue, event{e.to, to, phase, a.ID, string(a.Value)})
+					queue = append(queue, event{e.to, to, phase, a.ID, string(payload)})
 				}
 			}
 		}
