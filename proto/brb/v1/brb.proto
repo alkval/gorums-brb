@@ -43,7 +43,21 @@ message PhaseMessage {
   reserved sender;
 
   BroadcastID id = 1;
+  // The full value. Empty in READY when the variant is BRACHA_READY_DIGEST.
   bytes value = 2;
-  // All members must run the same variant. False selects ordinary Bracha.
-  bool optimistic = 4;
+  // All members must run the same variant. Field 4 previously held a boolean
+  // selecting the optimistic variant; old binaries read 2 as true, so
+  // mixed-version groups are unsupported.
+  Variant variant = 4;
+  // The SHA-256 digest of the value, set only in READY when the variant is
+  // BRACHA_READY_DIGEST. Receivers compute digests of values themselves.
+  bytes digest = 5;
+}
+
+// Variant selects the protocol. Every member of a run uses the same one.
+enum Variant {
+  VARIANT_BRACHA = 0;
+  VARIANT_OPTIMISTIC = 1;
+  // Bracha with a SHA-256 digest instead of the value in READY.
+  VARIANT_BRACHA_READY_DIGEST = 2;
 }

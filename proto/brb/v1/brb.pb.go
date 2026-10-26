@@ -22,6 +22,52 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Variant selects the protocol. Every member of a run uses the same one.
+type Variant int32
+
+const (
+	Variant_VARIANT_BRACHA     Variant = 0
+	Variant_VARIANT_OPTIMISTIC Variant = 1
+	// Bracha with a SHA-256 digest instead of the value in READY.
+	Variant_VARIANT_BRACHA_READY_DIGEST Variant = 2
+)
+
+// Enum value maps for Variant.
+var (
+	Variant_name = map[int32]string{
+		0: "VARIANT_BRACHA",
+		1: "VARIANT_OPTIMISTIC",
+		2: "VARIANT_BRACHA_READY_DIGEST",
+	}
+	Variant_value = map[string]int32{
+		"VARIANT_BRACHA":              0,
+		"VARIANT_OPTIMISTIC":          1,
+		"VARIANT_BRACHA_READY_DIGEST": 2,
+	}
+)
+
+func (x Variant) Enum() *Variant {
+	p := new(Variant)
+	*p = x
+	return p
+}
+
+func (x Variant) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Variant) Descriptor() protoreflect.EnumDescriptor {
+	return file_proto_brb_v1_brb_proto_enumTypes[0].Descriptor()
+}
+
+func (Variant) Type() protoreflect.EnumType {
+	return &file_proto_brb_v1_brb_proto_enumTypes[0]
+}
+
+func (x Variant) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
 // BroadcastID scopes protocol state to one value proposed by one origin.
 type BroadcastID struct {
 	state               protoimpl.MessageState `protogen:"opaque.v1"`
@@ -97,12 +143,13 @@ func (b0 BroadcastID_builder) Build() *BroadcastID {
 // PhaseMessage carries the value associated with a broadcast instance.
 // The sender is the peer identity reported by Gorums, not a message field.
 type PhaseMessage struct {
-	state                 protoimpl.MessageState `protogen:"opaque.v1"`
-	xxx_hidden_Id         *BroadcastID           `protobuf:"bytes,1,opt,name=id"`
-	xxx_hidden_Value      []byte                 `protobuf:"bytes,2,opt,name=value"`
-	xxx_hidden_Optimistic bool                   `protobuf:"varint,4,opt,name=optimistic"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"opaque.v1"`
+	xxx_hidden_Id      *BroadcastID           `protobuf:"bytes,1,opt,name=id"`
+	xxx_hidden_Value   []byte                 `protobuf:"bytes,2,opt,name=value"`
+	xxx_hidden_Variant Variant                `protobuf:"varint,4,opt,name=variant,enum=brb.v1.Variant"`
+	xxx_hidden_Digest  []byte                 `protobuf:"bytes,5,opt,name=digest"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *PhaseMessage) Reset() {
@@ -144,11 +191,18 @@ func (x *PhaseMessage) GetValue() []byte {
 	return nil
 }
 
-func (x *PhaseMessage) GetOptimistic() bool {
+func (x *PhaseMessage) GetVariant() Variant {
 	if x != nil {
-		return x.xxx_hidden_Optimistic
+		return x.xxx_hidden_Variant
 	}
-	return false
+	return Variant_VARIANT_BRACHA
+}
+
+func (x *PhaseMessage) GetDigest() []byte {
+	if x != nil {
+		return x.xxx_hidden_Digest
+	}
+	return nil
 }
 
 func (x *PhaseMessage) SetId(v *BroadcastID) {
@@ -162,8 +216,15 @@ func (x *PhaseMessage) SetValue(v []byte) {
 	x.xxx_hidden_Value = v
 }
 
-func (x *PhaseMessage) SetOptimistic(v bool) {
-	x.xxx_hidden_Optimistic = v
+func (x *PhaseMessage) SetVariant(v Variant) {
+	x.xxx_hidden_Variant = v
+}
+
+func (x *PhaseMessage) SetDigest(v []byte) {
+	if v == nil {
+		v = []byte{}
+	}
+	x.xxx_hidden_Digest = v
 }
 
 func (x *PhaseMessage) HasId() bool {
@@ -180,10 +241,16 @@ func (x *PhaseMessage) ClearId() {
 type PhaseMessage_builder struct {
 	_ [0]func() // Prevents comparability and use of unkeyed literals for the builder.
 
-	Id    *BroadcastID
+	Id *BroadcastID
+	// The full value. Empty in READY when the variant is BRACHA_READY_DIGEST.
 	Value []byte
-	// All members must run the same variant. False selects ordinary Bracha.
-	Optimistic bool
+	// All members must run the same variant. Field 4 previously held a boolean
+	// selecting the optimistic variant; old binaries read 2 as true, so
+	// mixed-version groups are unsupported.
+	Variant Variant
+	// The SHA-256 digest of the value, set only in READY when the variant is
+	// BRACHA_READY_DIGEST. Receivers compute digests of values themselves.
+	Digest []byte
 }
 
 func (b0 PhaseMessage_builder) Build() *PhaseMessage {
@@ -192,7 +259,8 @@ func (b0 PhaseMessage_builder) Build() *PhaseMessage {
 	_, _ = b, x
 	x.xxx_hidden_Id = b.Id
 	x.xxx_hidden_Value = b.Value
-	x.xxx_hidden_Optimistic = b.Optimistic
+	x.xxx_hidden_Variant = b.Variant
+	x.xxx_hidden_Digest = b.Digest
 	return m0
 }
 
@@ -203,40 +271,46 @@ const file_proto_brb_v1_brb_proto_rawDesc = "" +
 	"\x16proto/brb/v1/brb.proto\x12\x06brb.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\fgorums.proto\"A\n" +
 	"\vBroadcastID\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\rR\x06origin\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\x04R\bsequence\"w\n" +
+	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\x9a\x01\n" +
 	"\fPhaseMessage\x12#\n" +
 	"\x02id\x18\x01 \x01(\v2\x13.brb.v1.BroadcastIDR\x02id\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1e\n" +
-	"\n" +
-	"optimistic\x18\x04 \x01(\bR\n" +
-	"optimisticJ\x04\b\x03\x10\x04R\x06sender2\xfd\x01\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12)\n" +
+	"\avariant\x18\x04 \x01(\x0e2\x0f.brb.v1.VariantR\avariant\x12\x16\n" +
+	"\x06digest\x18\x05 \x01(\fR\x06digestJ\x04\b\x03\x10\x04R\x06sender*V\n" +
+	"\aVariant\x12\x12\n" +
+	"\x0eVARIANT_BRACHA\x10\x00\x12\x16\n" +
+	"\x12VARIANT_OPTIMISTIC\x10\x01\x12\x1f\n" +
+	"\x1bVARIANT_BRACHA_READY_DIGEST\x10\x022\xfd\x01\n" +
 	"\x06Bracha\x12=\n" +
 	"\aPropose\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12:\n" +
 	"\x04Echo\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12;\n" +
 	"\x05Ready\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12;\n" +
 	"\x05QEcho\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01B6Z/github.com/alkval/gorums-brb/proto/brb/v1;brbv1\x92\x03\x02\b\x02b\beditionsp\xe9\a"
 
+var file_proto_brb_v1_brb_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_proto_brb_v1_brb_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_proto_brb_v1_brb_proto_goTypes = []any{
-	(*BroadcastID)(nil),   // 0: brb.v1.BroadcastID
-	(*PhaseMessage)(nil),  // 1: brb.v1.PhaseMessage
-	(*emptypb.Empty)(nil), // 2: google.protobuf.Empty
+	(Variant)(0),          // 0: brb.v1.Variant
+	(*BroadcastID)(nil),   // 1: brb.v1.BroadcastID
+	(*PhaseMessage)(nil),  // 2: brb.v1.PhaseMessage
+	(*emptypb.Empty)(nil), // 3: google.protobuf.Empty
 }
 var file_proto_brb_v1_brb_proto_depIdxs = []int32{
-	0, // 0: brb.v1.PhaseMessage.id:type_name -> brb.v1.BroadcastID
-	1, // 1: brb.v1.Bracha.Propose:input_type -> brb.v1.PhaseMessage
-	1, // 2: brb.v1.Bracha.Echo:input_type -> brb.v1.PhaseMessage
-	1, // 3: brb.v1.Bracha.Ready:input_type -> brb.v1.PhaseMessage
-	1, // 4: brb.v1.Bracha.QEcho:input_type -> brb.v1.PhaseMessage
-	2, // 5: brb.v1.Bracha.Propose:output_type -> google.protobuf.Empty
-	2, // 6: brb.v1.Bracha.Echo:output_type -> google.protobuf.Empty
-	2, // 7: brb.v1.Bracha.Ready:output_type -> google.protobuf.Empty
-	2, // 8: brb.v1.Bracha.QEcho:output_type -> google.protobuf.Empty
-	5, // [5:9] is the sub-list for method output_type
-	1, // [1:5] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	1, // 0: brb.v1.PhaseMessage.id:type_name -> brb.v1.BroadcastID
+	0, // 1: brb.v1.PhaseMessage.variant:type_name -> brb.v1.Variant
+	2, // 2: brb.v1.Bracha.Propose:input_type -> brb.v1.PhaseMessage
+	2, // 3: brb.v1.Bracha.Echo:input_type -> brb.v1.PhaseMessage
+	2, // 4: brb.v1.Bracha.Ready:input_type -> brb.v1.PhaseMessage
+	2, // 5: brb.v1.Bracha.QEcho:input_type -> brb.v1.PhaseMessage
+	3, // 6: brb.v1.Bracha.Propose:output_type -> google.protobuf.Empty
+	3, // 7: brb.v1.Bracha.Echo:output_type -> google.protobuf.Empty
+	3, // 8: brb.v1.Bracha.Ready:output_type -> google.protobuf.Empty
+	3, // 9: brb.v1.Bracha.QEcho:output_type -> google.protobuf.Empty
+	6, // [6:10] is the sub-list for method output_type
+	2, // [2:6] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_proto_brb_v1_brb_proto_init() }
@@ -249,13 +323,14 @@ func file_proto_brb_v1_brb_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_brb_v1_brb_proto_rawDesc), len(file_proto_brb_v1_brb_proto_rawDesc)),
-			NumEnums:      0,
+			NumEnums:      1,
 			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_proto_brb_v1_brb_proto_goTypes,
 		DependencyIndexes: file_proto_brb_v1_brb_proto_depIdxs,
+		EnumInfos:         file_proto_brb_v1_brb_proto_enumTypes,
 		MessageInfos:      file_proto_brb_v1_brb_proto_msgTypes,
 	}.Build()
 	File_proto_brb_v1_brb_proto = out.File

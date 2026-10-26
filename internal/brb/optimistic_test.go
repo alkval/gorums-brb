@@ -6,6 +6,7 @@ import (
 	"math/rand/v2"
 	"testing"
 
+	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -338,19 +339,27 @@ func TestOptimisticGorumsDelivery(t *testing.T) {
 }
 
 func TestRejectMismatchedVariant(t *testing.T) {
+	// Every variant, plus a value unknown to this version.
+	variants := []brbv1.Variant{brbv1.Variant_VARIANT_BRACHA, brbv1.Variant_VARIANT_OPTIMISTIC,
+		brbv1.Variant_VARIANT_BRACHA_READY_DIGEST, brbv1.Variant(7)}
 	for _, optimistic := range []bool{false, true} {
 		m := optimisticMachine(t, 4, 1, 1)
 		m.optimistic = optimistic
 		node := &Replica{self: 1, machine: m, ctx: t.Context()}
 		msg := phaseMessage(BroadcastID{1, 1}, []byte("v"))
-		msg.SetOptimistic(!optimistic)
-		node.handleFrom(1, PhaseEcho, msg)
-		if len(m.instances) != 0 {
-			t.Fatal("accepted mismatched protocol")
+		for _, v := range variants {
+			if v == node.variant() {
+				continue
+			}
+			msg.SetVariant(v)
+			node.handleFrom(1, PhaseEcho, msg)
+			if len(m.instances) != 0 {
+				t.Fatalf("replica of variant %v accepted %v", node.variant(), v)
+			}
 		}
 		// The same vote from the same member is accepted with the right variant.
 		// One ECHO is below every threshold, so no multicast is attempted.
-		msg.SetOptimistic(optimistic)
+		msg.SetVariant(node.variant())
 		node.handleFrom(1, PhaseEcho, msg)
 		if len(m.instances) != 1 {
 			t.Fatal("rejected a matching protocol variant")
