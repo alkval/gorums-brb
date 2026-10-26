@@ -186,8 +186,17 @@ func (n *Replica) QEcho(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 
 func (n *Replica) message(id BroadcastID, value []byte) *brbv1.PhaseMessage {
 	msg := phaseMessage(id, value)
-	msg.SetOptimistic(n.machine.optimistic)
+	msg.SetVariant(n.variant())
 	return msg
+}
+
+// variant names this replica's protocol on the wire. Replicas reject messages
+// from any other variant, including values unknown to this version.
+func (n *Replica) variant() brbv1.Variant {
+	if n.machine.optimistic {
+		return brbv1.Variant_VARIANT_OPTIMISTIC
+	}
+	return brbv1.Variant_VARIANT_BRACHA
 }
 
 // Subsets reuse the existing Gorums connections. PROPOSE and READY reach all.
@@ -262,7 +271,7 @@ func (n *Replica) handleFrom(sender ProcessID, phase Phase, msg *brbv1.PhaseMess
 		log.Printf("brb node %d: missing broadcast ID", n.self)
 		return
 	}
-	if msg.GetOptimistic() != n.machine.optimistic {
+	if msg.GetVariant() != n.variant() {
 		log.Printf("brb node %d: rejected mismatched protocol variant", n.self)
 		return
 	}
