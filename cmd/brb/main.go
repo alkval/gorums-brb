@@ -39,6 +39,9 @@ func execute(ctx context.Context, args []string, output io.Writer) error {
 		benchkit.SetVerbose(opts.Verbose)
 		return bench.Run(ctx, opts)
 	}
+	if mode == "certs" {
+		return generateCerts(args, output)
+	}
 	opts, err := parseOptions(args, output)
 	if err != nil {
 		return err
@@ -84,8 +87,8 @@ func commandMode(args []string) (string, []string, error) {
 			rest = append(rest, args[i])
 		}
 	}
-	if mode != "node" && mode != "bench" {
-		return "", nil, fmt.Errorf("brb: unknown mode %q, want node or bench", mode)
+	if mode != "node" && mode != "bench" && mode != "certs" {
+		return "", nil, fmt.Errorf("brb: unknown mode %q, want node, bench or certs", mode)
 	}
 	return mode, rest, nil
 }
