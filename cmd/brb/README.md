@@ -268,3 +268,39 @@ variant, without networking. The difference is the incremental cost of those
 two transitions in these implementations, including the digest variant's
 extra allocations, rather than the cost of SHA-256 alone. It does not give the
 cost of a whole broadcast or the effect on network latency.
+
+## Diagnostics
+
+Each benchmark replica also prints diagnostic lines when it shuts down,
+including after an invalid run, which writes no report. They measure only; the
+protocol, thresholds, window and sends are unchanged.
+
+```text
+brb bench: node 3 diag origin started=N returned=N failed=0 outstanding=0 before_delivery=N after_delivery=N undelivered=0 after_p50_ns=N after_p99_ns=N after_max_ns=N after_over10ms=N after_over100ms=N after_over1s=N
+brb bench: node 3 diag send phase=echo started=N succeeded=N failed=0 cancelled=N outstanding=0 total_ns=N max_ns=N over10ms=N over100ms=N over1s=N oldest_outstanding_ns=0
+brb bench: node 3 diag window violations=N
+brb bench: node 3 diag window first origin=N phase=echo sender=N sequence=N prefix=N open=N next_allocated=false later_delivered=N highest_delivered=N lowest=N lowest_allocated=false started=false echo_sent=false ready_sent=false proposed=not-retained echoes=none readies=none payloads=not-retained
+```
+
+- `diag origin` compares, for each origin broadcast, when `Broadcast` returned
+  with when the broadcast was delivered locally. `after_delivery` counts
+  returns after delivery, with the distribution of that delay; time spent there
+  lowers throughput without raising the recorded latency. `undelivered` counts
+  broadcasts the worker saw no delivery for; `outstanding` calls had not
+  returned at shutdown.
+- `diag send` covers every Gorums `Send` of one phase: successful, failed during
+  the run, and cancelled (a failure after the run context ended or reporting
+  cancellation). Durations cover completed calls; `outstanding` calls were
+  still waiting at shutdown, so their durations are censored and
+  `oldest_outstanding_ns` is the age of the longest one.
+- `diag window` counts messages rejected for being outside the receive window.
+  The `first` line is a snapshot taken when the first one was rejected: the
+  origin's delivered prefix, its open instances, whether `prefix+1` exists, how
+  many later instances were already delivered, and the state of the lowest
+  undelivered instance. Votes are listed as `fingerprint:count`, where the
+  fingerprint is the first 8 bytes of the value's SHA-256 digest, so ECHO and
+  READY counts for the same value match in both variants. `not-retained` marks
+  facts the state does not keep (Bracha keeps values only as vote keys).
+- The timing adds two clock reads per send and per origin broadcast; compare
+  runs with the same source when judging its overhead. These lines show where
+  time is spent, not why: they do not identify a peer, queue or network cause.

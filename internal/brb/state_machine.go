@@ -67,6 +67,9 @@ type StateMachine struct {
 	optimistic  bool
 	readyDigest bool // READY carries a SHA-256 digest instead of the value
 	self        ProcessID
+	// Diagnostics: rejected messages and the state at the first rejection.
+	windowViolations uint64
+	firstViolation   *WindowSnapshot
 }
 
 type instance struct {
@@ -170,6 +173,7 @@ func (m *StateMachine) handle(from ProcessID, phase Phase, id BroadcastID, value
 		return nil, nil
 	}
 	if id.Sequence-m.delivered[id.Origin] > WindowSize {
+		m.recordWindowViolation(from, phase, id)
 		return nil, ErrOutsideWindow
 	}
 

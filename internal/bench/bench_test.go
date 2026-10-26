@@ -157,70 +157,88 @@ func TestWindowViolationPreventsReport(t *testing.T) {
 	brbv1.RegisterBrachaServer(peer, quietBenchmarkPeer{started: started})
 	benchkit.RegisterControlServer(peer, benchkit.NewControl())
 	go func() { _ = peer.Serve(listener) }()
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
-	results := make([]chan error, 3)
-	paths := make([]string, 3)
-	for i, addr := range peers[:3] {
-		paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-		opts, err := ParseOptions([]string{"-plaintext", "-self=" + addr, "-remotes=" + strings.Join(peers, ","),
-			"-f=1", "-output=" + paths[i], "-time=500ms", "-rate=20"}, io.Discard)
-		if err != nil {
-			t.Fatal(err)
-		}
-		results[i] = make(chan error, 1)
-		go func() { results[i] <- Run(ctx, opts) }()
-	}
-	// Wait until node 1 is originating broadcasts, then send it the violation.
-	for id := uint32(0); id != 1; {
-		select {
-		case id = <-started:
-		case <-ctx.Done():
-			t.Fatal("node 1 did not start its workload")
-		}
-	}
-	// The peer learns of node 1 through node 1's inbound stream. Wait for its own
-	// outbound connections before sending.
-	if err := peer.WaitForPeers(ctx, func(c gorums.Config) bool { return len(c) == 4 }); err != nil {
-		t.Fatal(err)
-	}
-	var toNode1 gorums.Config
-	for _, node := range peer.PeerConfig() {
-		if node.ID() == 1 {
-			toNode1 = gorums.Config{node}
-		}
-	}
-	msg := brbv1.PhaseMessage_builder{
-		Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: ^uint64(0)}.Build(),
-		Value: []byte("outside window"),
-	}.Build()
-	if err := brbv1.Echo(toNode1.Context(ctx), msg).Send(); err != nil {
-		t.Fatal(err)
-	}
-	// Signal completion so the correct replicas do not wait for the timeout.
-	_ = benchkit.Done(peer.PeerConfig().Context(ctx), benchkit.DoneRequest_builder{SenderId: 4}.Build()).Send()
-	select {
-	case err := <-results[0]:
-		if !errors.Is(err, brb.ErrOutsideWindow) {
-			t.Fatalf("window violation returned %v", err)
-		}
-	case <-ctx.Done():
-		t.Fatal("benchmark did not finish")
-	}
-	if _, err := os.Stat(paths[0]); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("invalid run wrote a report: %v", err)
-	}
-	// The other replicas never received the violation and report normally.
-	for i := 1; i < 3; i++ {
-		select {
-		case err := <-results[i]:
+	logged := captureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+		defer cancel()
+		results := make([]chan error, 3)
+		paths := make([]string, 3)
+		for i, addr := range peers[:3] {
+			paths[i] = filepath.Join(t.TempDir(), "result.binpb")
+			opts, err := ParseOptions([]string{"-plaintext", "-self=" + addr, "-remotes=" + strings.Join(peers, ","),
+				"-f=1", "-output=" + paths[i], "-time=500ms", "-rate=20"}, io.Discard)
 			if err != nil {
 				t.Fatal(err)
+			}
+			results[i] = make(chan error, 1)
+			go func() { results[i] <- Run(ctx, opts) }()
+		}
+		// Wait until node 1 is originating broadcasts, then send it the violation.
+		for id := uint32(0); id != 1; {
+			select {
+			case id = <-started:
+			case <-ctx.Done():
+				t.Fatal("node 1 did not start its workload")
+			}
+		}
+		// The peer learns of node 1 through node 1's inbound stream. Wait for its own
+		// outbound connections before sending.
+		if err := peer.WaitForPeers(ctx, func(c gorums.Config) bool { return len(c) == 4 }); err != nil {
+			t.Fatal(err)
+		}
+		var toNode1 gorums.Config
+		for _, node := range peer.PeerConfig() {
+			if node.ID() == 1 {
+				toNode1 = gorums.Config{node}
+			}
+		}
+		msg := brbv1.PhaseMessage_builder{
+			Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: ^uint64(0)}.Build(),
+			Value: []byte("outside window"),
+		}.Build()
+		if err := brbv1.Echo(toNode1.Context(ctx), msg).Send(); err != nil {
+			t.Fatal(err)
+		}
+		// Signal completion so the correct replicas do not wait for the timeout.
+		_ = benchkit.Done(peer.PeerConfig().Context(ctx), benchkit.DoneRequest_builder{SenderId: 4}.Build()).Send()
+		select {
+		case err := <-results[0]:
+			if !errors.Is(err, brb.ErrOutsideWindow) {
+				t.Fatalf("window violation returned %v", err)
 			}
 		case <-ctx.Done():
 			t.Fatal("benchmark did not finish")
 		}
-		checkReport(t, paths[i], 4, 1, 0)
+		if _, err := os.Stat(paths[0]); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("invalid run wrote a report: %v", err)
+		}
+		// The other replicas never received the violation and report normally.
+		for i := 1; i < 3; i++ {
+			select {
+			case err := <-results[i]:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("benchmark did not finish")
+			}
+			checkReport(t, paths[i], 4, 1, 0)
+		}
+	})
+	// The invalid run still prints its diagnostics, with the first violation.
+	checkDiagnostics(t, logged, 1)
+	want := "brb bench: node 1 diag window violations=1\n"
+	if !strings.Contains(logged, want) {
+		t.Fatalf("missing %q in:\n%s", want, logged)
+	}
+	first := fmt.Sprintf("brb bench: node 1 diag window first origin=1 phase=echo sender=4 sequence=%d prefix=", ^uint64(0))
+	if !strings.Contains(logged, first) {
+		t.Fatalf("missing %q in:\n%s", first, logged)
+	}
+	for id := 2; id <= 3; id++ {
+		checkDiagnostics(t, logged, id)
+		if !strings.Contains(logged, fmt.Sprintf("brb bench: node %d diag window violations=0\n", id)) {
+			t.Fatalf("node %d reported window violations:\n%s", id, logged)
+		}
 	}
 }
 

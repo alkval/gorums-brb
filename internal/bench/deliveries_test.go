@@ -181,6 +181,7 @@ func TestBenchmarkLogsReplicaDeliveries(t *testing.T) {
 		}
 	})
 	var completed, largest uint64
+	opsByNode := make(map[int]uint64)
 	for i, path := range paths {
 		if errs[i] != nil {
 			t.Fatal(errs[i])
@@ -190,6 +191,7 @@ func TestBenchmarkLogsReplicaDeliveries(t *testing.T) {
 			t.Fatal(err)
 		}
 		ops := report.GetResults()[0].GetTotalOps()
+		opsByNode[i+1] = ops
 		completed += ops
 		largest = max(largest, ops)
 	}
@@ -207,6 +209,15 @@ func TestBenchmarkLogsReplicaDeliveries(t *testing.T) {
 		if window != (200*time.Millisecond).Nanoseconds() || inWindow == 0 || inWindow > total || total > completed || total <= largest {
 			t.Fatalf("node %d: window=%d in_window=%d total=%d, want 200ms and 0 < in_window <= total <= %d, total > %d",
 				id, window, inWindow, total, completed, largest)
+		}
+		// Every recorded latency is one delivery the worker observed after its
+		// Broadcast returned or before; none is still running after a full run.
+		if o := checkDiagnostics(t, logged, id); o[3] != 0 || o[4]+o[5] != opsByNode[id] {
+			t.Fatalf("node %d: diag origin %v, want no outstanding and before+after = TotalOps %d", id, o, opsByNode[id])
+		}
+		if !strings.Contains(logged, fmt.Sprintf("brb bench: node %d diag window violations=0\n", id)) ||
+			strings.Contains(logged, fmt.Sprintf("brb bench: node %d diag window first", id)) {
+			t.Fatalf("node %d: unexpected window violation in a fault-free run:\n%s", id, logged)
 		}
 	}
 }

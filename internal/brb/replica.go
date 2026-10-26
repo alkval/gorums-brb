@@ -48,6 +48,7 @@ type Replica struct {
 	trafficMu    sync.Mutex
 	trafficFinal bool
 	traffic      [PhaseQEcho + 1]Traffic // indexed by Phase
+	sends        [PhaseQEcho + 1]sendStats
 }
 
 // NewReplica registers the adapter before server.Serve. All processes must
@@ -130,7 +131,25 @@ type multicastFunc func(*brbv1.ConfigContext, *brbv1.PhaseMessage) *gorums.Onewa
 
 func (n *Replica) multicast(phase Phase, recipients gorums.Config, msg *brbv1.PhaseMessage, call multicastFunc) error {
 	n.recordSend(phase, recipients, msg)
-	return call(recipients.Context(n.ctx), msg).Send()
+	token, start := n.sends[phase].begin()
+	err := call(recipients.Context(n.ctx), msg).Send()
+	n.sends[phase].end(token, start, err, n.ctx.Err() != nil)
+	return err
+}
+
+// SendTiming reports the duration of Gorums Send calls for one phase, including
+// calls still waiting (censored) when it is called.
+func (n *Replica) SendTiming(phase Phase) SendTiming {
+	if phase < PhasePropose || phase > PhaseQEcho {
+		return SendTiming{}
+	}
+	return n.sends[phase].snapshot()
+}
+
+// WindowViolations reports the receive-window rejections at this replica and
+// the snapshot taken at the first one.
+func (n *Replica) WindowViolations() (uint64, *WindowSnapshot) {
+	return n.machine.WindowViolations()
 }
 
 // recordSend counts one attempted multicast before it is sent. Computing the
