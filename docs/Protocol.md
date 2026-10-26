@@ -114,4 +114,7 @@ delivery. These scenarios are evidence, not an exhaustive correctness proof.
 The benchmark measures invocation to delivery at the origin, on one clock.
 Reports count completed origin broadcasts and cannot establish all-replica
 delivery. Startup, completion coordination and the final drain are excluded.
-Per-replica delivery rates cannot be inferred from origin throughput.
+Per-replica delivery rates cannot be inferred from origin throughput, so each
+replica also logs a snapshot of its deliveries from every origin, inside its own
+measurement window and in total. Deliveries still in a handler at shutdown may
+be missing, so these counts are lower bounds.

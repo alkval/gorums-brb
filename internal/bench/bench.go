@@ -154,7 +154,7 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 func Run(parent context.Context, opts Options) error {
 	ctx, cancel := context.WithTimeout(parent, opts.Duration+startupTimeout(len(opts.Remotes))+completionTimeout(len(opts.Remotes))+5*time.Second)
 	defer cancel()
-	tracker := &deliveryTracker{self: opts.selfID, waiters: make(map[uint64]chan time.Time)}
+	tracker := &deliveryTracker{self: opts.selfID, now: time.Now, waiters: make(map[uint64]chan time.Time)}
 	node, err := startNode(ctx, opts, tracker.delivered)
 	if err != nil {
 		return err
@@ -192,6 +192,7 @@ func Run(parent context.Context, opts Options) error {
 		return fmt.Errorf("brb bench: invalid run: %w", err)
 	}
 	logTraffic(opts.selfID, node.replica)
+	logDeliveries(opts.selfID, tracker, opts.Duration)
 	label := fmt.Sprintf("node %d f=%d auth=%s", opts.selfID, opts.f, opts.auth())
 	if opts.optimistic {
 		label += " optimistic=true"
@@ -223,17 +224,45 @@ type benchmarkNode struct {
 
 type deliveryTracker struct {
 	self    uint32
+	now     func() time.Time // the clock, time.Now unless a test replaces it
 	mu      sync.Mutex
 	waiters map[uint64]chan time.Time
+	// The measurement window [start, end) at this replica, empty until open is
+	// called, and the deliveries from every origin, in total and inside it.
+	start, end      time.Time
+	total, inWindow uint64
+}
+
+// open starts the measurement window of length d at this replica and returns
+// its bounds. Both the window and each delivery read the clock under the same
+// lock, so a delivery recorded before open finds the window empty and every
+// later one is compared with the window's bounds.
+func (t *deliveryTracker) open(d time.Duration) (start, end time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.start = t.now()
+	t.end = t.start.Add(d)
+	return t.start, t.end
+}
+
+// counts returns a snapshot of the deliveries inside the window and in total.
+func (t *deliveryTracker) counts() (inWindow, total uint64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.inWindow, t.total
 }
 
 func (t *deliveryTracker) delivered(d brb.Delivery) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	now := t.now()
+	t.total++
+	if !now.Before(t.start) && now.Before(t.end) {
+		t.inWindow++
+	}
 	if uint32(d.ID.Origin) != t.self {
 		return
 	}
-	now := time.Now()
-	t.mu.Lock()
-	defer t.mu.Unlock()
 	if ch := t.waiters[d.ID.Sequence]; ch != nil {
 		delete(t.waiters, d.ID.Sequence)
 		ch <- now
@@ -342,8 +371,7 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 		Run: func(o benchkit.Options) (*benchkit.Result, error) {
 			measurement := benchkit.StartMeasurement(o)
 			defer measurement.Abandon()
-			start := time.Now()
-			end := start.Add(o.Duration)
+			start, end := tracker.open(o.Duration)
 			// Stop pacing at the deadline without cancelling broadcasts already
 			// started. Those still use the enclosing run context to finish.
 			phaseCtx, phaseCancel := context.WithDeadline(ctx, end)
@@ -411,6 +439,18 @@ func logTraffic(selfID uint32, replica *brb.Replica) {
 		benchkit.Printf("brb bench: node %d traffic phase=%s calls=%d remote_msgs=%d remote_bytes=%d local_msgs=%d local_bytes=%d\n",
 			selfID, p.name, t.Calls, t.RemoteMessages, t.RemoteBytes, t.LocalMessages, t.LocalBytes)
 	}
+}
+
+// logDeliveries records how many broadcasts this replica delivered, from every
+// origin: inside its measurement window, for replica-side throughput, and in
+// total. Both are a snapshot taken when this is called, after the server has
+// stopped. Handlers still running at that point may deliver later, so both
+// counts are lower bounds and the total can fall short of the group's
+// completed origin broadcasts.
+func logDeliveries(selfID uint32, tracker *deliveryTracker, window time.Duration) {
+	inWindow, total := tracker.counts()
+	benchkit.Printf("brb bench: node %d deliveries window_ns=%d in_window=%d total=%d\n",
+		selfID, window.Nanoseconds(), inWindow, total)
 }
 
 func waitGrace(ctx context.Context, duration time.Duration) error {
