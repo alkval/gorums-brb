@@ -14,5 +14,5 @@ All replicas must use the same generated RPC names. Old binaries using
 
 A broadcast ID contains the origin and sequence. There is no sender field:
 receivers use the peer ID that Gorums reports for the stream. Field number 3 and
-the name `sender` are reserved, so binaries from before this change cannot join
-a group.
+the name `sender` are reserved to prevent reuse. Mixed-version groups are
+unsupported. Restart the whole group with matching binaries.

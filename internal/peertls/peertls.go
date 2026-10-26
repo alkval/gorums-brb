@@ -81,11 +81,12 @@ func Load(dir string, self uint32) (server, client credentials.TransportCredenti
 		return nil, nil, fmt.Errorf("peertls: %w", err)
 	}
 	leaf := pair.Leaf
-	if _, err := leaf.Verify(x509.VerifyOptions{
-		Roots:     pool,
-		KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
-	}); err != nil {
-		return nil, nil, fmt.Errorf("peertls: %s does not chain to %s: %w", CertFile, CAFile, err)
+	// A replica is both a TLS server and a TLS client. VerifyOptions.KeyUsages
+	// accepts any listed usage, so each role is checked on its own.
+	for _, usage := range []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth} {
+		if _, err := leaf.Verify(x509.VerifyOptions{Roots: pool, KeyUsages: []x509.ExtKeyUsage{usage}}); err != nil {
+			return nil, nil, fmt.Errorf("peertls: %s is not valid for %s under %s: %w", CertFile, roleName(usage), CAFile, err)
+		}
 	}
 	if !hasURI(leaf, Identity(self)) {
 		return nil, nil, fmt.Errorf("peertls: %s does not name %s", CertFile, Identity(self))
@@ -103,6 +104,13 @@ func Load(dir string, self uint32) (server, client credentials.TransportCredenti
 		RootCAs:      pool,
 	})
 	return server, client, nil
+}
+
+func roleName(usage x509.ExtKeyUsage) string {
+	if usage == x509.ExtKeyUsageServerAuth {
+		return "server authentication"
+	}
+	return "client authentication"
 }
 
 func hasURI(cert *x509.Certificate, identity string) bool {
