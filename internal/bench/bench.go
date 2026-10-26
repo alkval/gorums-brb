@@ -155,6 +155,7 @@ func Run(parent context.Context, opts Options) error {
 	ctx, cancel := context.WithTimeout(parent, opts.Duration+startupTimeout(len(opts.Remotes))+completionTimeout(len(opts.Remotes))+5*time.Second)
 	defer cancel()
 	tracker := &deliveryTracker{self: opts.selfID, now: time.Now, waiters: make(map[uint64]chan time.Time)}
+	origin := &originTiming{}
 	node, err := startNode(ctx, opts, tracker.delivered)
 	if err != nil {
 		return err
@@ -163,6 +164,7 @@ func Run(parent context.Context, opts Options) error {
 		cancel()
 		node.server.Stop()
 		node.replica.LogMulticastFailures()
+		logDiagnostics(opts.selfID, node.replica, origin)
 	}()
 	if err := awaitPeers(ctx, node, opts); err != nil {
 		return err
@@ -174,7 +176,7 @@ func Run(parent context.Context, opts Options) error {
 	if uint(opts.selfID) == opts.faultNode && opts.fault != "none" {
 		return runFault(ctx, node, opts)
 	}
-	results, failures, err := measure(ctx, cancel, node, opts, tracker)
+	results, failures, err := measure(ctx, cancel, node, opts, tracker, origin)
 	if err != nil {
 		return err
 	}
@@ -360,7 +362,7 @@ func awaitPeers(ctx context.Context, node *benchmarkNode, opts Options) error {
 	return nil
 }
 
-func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode, opts Options, tracker *deliveryTracker) ([]*benchkit.Result, uint64, error) {
+func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode, opts Options, tracker *deliveryTracker, origin *originTiming) ([]*benchkit.Result, uint64, error) {
 	var sequence atomic.Uint64
 	var sendFailures atomic.Uint64
 	value := bytes.Repeat([]byte{'x'}, opts.Payload)
@@ -388,24 +390,23 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 					tracker.mu.Unlock()
 					defer func() { tracker.mu.Lock(); delete(tracker.waiters, id); tracker.mu.Unlock() }()
 					startedAt := time.Now()
-					if err := node.replica.Broadcast(id, value); err != nil {
-						if !errors.Is(err, gorums.ErrSendFailure) {
-							return err
-						}
-						sendFailures.Add(1)
+					origin.start()
+					err := node.replica.Broadcast(id, value)
+					returnedAt := time.Now()
+					if errors.Is(err, gorums.ErrSendFailure) {
 						// A failed send to one peer does not establish whether the
-						// origin can deliver. Wait for the actual delivery below.
+						// origin can deliver. settleBroadcast waits for the delivery.
+						sendFailures.Add(1)
 					}
-					select {
-					case deliveredAt := <-ch:
-						measurement.Stats.AddLatency(deliveredAt.Sub(startedAt))
-						return nil
-					case <-ctx.Done():
-						return ctx.Err()
-					case err := <-node.serveErr:
-						cancel()
-						return fmt.Errorf("brb bench: server stopped: %w", err)
+					deliveredAt, err := settleBroadcast(ctx, origin, ch, node.serveErr, returnedAt, err)
+					if err != nil {
+						if errors.Is(err, errServerStopped) {
+							cancel()
+						}
+						return err
 					}
+					measurement.Stats.AddLatency(deliveredAt.Sub(startedAt))
+					return nil
 				})
 			if err != nil {
 				return nil, err
