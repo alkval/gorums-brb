@@ -241,3 +241,30 @@ are present. Traffic lines are printed before the report is written, so their
 presence alone does not show that a replica succeeded. The metric does
 not measure NIC utilisation or actual wire traffic, and it alone cannot show
 that bandwidth caused a performance difference.
+
+## Replica deliveries
+
+Each valid benchmark replica also prints how many broadcasts it delivered, from
+every origin:
+
+```text
+brb bench: node 3 deliveries window_ns=10000000000 in_window=41231 total=41874
+```
+
+The replica's delivery throughput in deliveries per second is
+`in_window * 1e9 / window_ns`. Each replica counts over its own local window,
+which opens when its measurement starts, lasts the configured duration and is
+not trimmed, so it is not the same interval as the origin reports' duration.
+
+Both counts are a snapshot taken when the line is printed, after the server
+stops. A delivery still in a handler at that point may be missing from either
+count, so they are lower bounds. In a complete fault-free trial `total` is at
+most the sum of all reports' untrimmed `TotalOps`, and a smaller `total` is not
+proof that a broadcast was lost.
+
+`go test -run '^$' -bench Transition ./internal/brb` measures one PROPOSE and
+one ECHO transition of the state machine for Bracha and the READY-digest
+variant, without networking. The difference is the incremental cost of those
+two transitions in these implementations, including the digest variant's
+extra allocations, rather than the cost of SHA-256 alone. It does not give the
+cost of a whole broadcast or the effect on network latency.
