@@ -132,17 +132,20 @@ func TestNetworkFaultScenarios(t *testing.T) {
 	}
 }
 
+// The faults run over authenticated TLS, as in the final experiments. The
+// faulty replica uses its own certificate and therefore its own identity.
 func TestFaultModesWriteOnlyCorrectOriginReports(t *testing.T) {
 	for _, mode := range []string{"silent", "wrong-echo", "equivocate"} {
 		t.Run(mode, func(t *testing.T) {
 			peers := addresses(t, 4)
+			creds := benchCreds(t, peers)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer cancel()
 			paths := make([]string, 4)
 			done := make(chan error, 4)
 			for i, addr := range peers {
 				paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-				opts, err := ParseOptions([]string{"-plaintext", "-self=" + addr, "-remotes=" + strings.Join(peers, ","), "-fault=" + mode,
+				opts, err := ParseOptions([]string{"-tls-dir=" + nodeCreds(creds, i+1), "-self=" + addr, "-remotes=" + strings.Join(peers, ","), "-fault=" + mode,
 					"-output=" + paths[i], "-time=100ms", "-payload=256", "-rate=50"}, io.Discard)
 				if err != nil {
 					t.Fatal(err)
@@ -160,7 +163,7 @@ func TestFaultModesWriteOnlyCorrectOriginReports(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := fmt.Sprintf("node %d f=1 auth=none fail-fast=true fault=%s fault-node=4 kill-after=0s", i+1, mode)
+				want := fmt.Sprintf("node %d f=1 auth=tls fail-fast=true fault=%s fault-node=4 kill-after=0s", i+1, mode)
 				if report.GetLabel() != want {
 					t.Fatalf("scenario not recorded: %s", report.GetLabel())
 				}
