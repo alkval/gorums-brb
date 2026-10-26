@@ -5,9 +5,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alkval/gorums-brb/internal/peertls"
 )
 
 func TestParseOptions(t *testing.T) {
@@ -154,44 +157,79 @@ func TestRunRejectsOccupiedPort(t *testing.T) {
 }
 
 func TestRunBroadcastsToSelf(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	opts, err := parseOptions([]string{
-		"-id", "1", "-f", "0", "-peers", addr, "-broadcast", "hello",
-	}, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines, cancel, done := startTestNode(t, opts)
-	timeout := time.NewTimer(3 * time.Second)
-	defer timeout.Stop()
-	for {
-		select {
-		case line := <-lines:
-			if !strings.Contains(line, `node 1 delivered origin=1 sequence=1 value="hello"`) {
-				continue
+	for _, useTLS := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plaintext", true: "tls"}[useTLS], func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
 			}
-			cancel()
-			select {
-			case err := <-done:
-				if err != nil {
+			addr := listener.Addr().String()
+			if err := listener.Close(); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"-id", "1", "-f", "0", "-peers", addr, "-broadcast", "hello"}
+			mode := "node 1: plaintext, sender IDs are not verified"
+			if useTLS {
+				creds := filepath.Join(t.TempDir(), "creds")
+				if err := peertls.Generate(creds, []string{addr}, time.Hour); err != nil {
 					t.Fatal(err)
 				}
-			case <-time.After(3 * time.Second):
-				t.Fatal("shutdown timed out")
+				args = append(args, "-tls-dir", filepath.Join(creds, "node-1"))
+				mode = "node 1: TLS, peers verified as spiffe://gorums-brb/node/1"
 			}
-			return
-		case err := <-done:
-			t.Fatalf("node exited before delivery: %v", err)
-		case <-timeout.C:
-			t.Fatal("delivery timed out")
-		}
+			opts, err := parseOptions(args, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines, cancel, done := startTestNode(t, opts)
+			timeout := time.NewTimer(3 * time.Second)
+			defer timeout.Stop()
+			sawMode := false
+			for {
+				select {
+				case line := <-lines:
+					sawMode = sawMode || strings.Contains(line, mode)
+					if !strings.Contains(line, `node 1 delivered origin=1 sequence=1 value="hello"`) {
+						continue
+					}
+					if !sawMode {
+						t.Fatalf("missing transport log line %q", mode)
+					}
+					cancel()
+					select {
+					case err := <-done:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case <-time.After(3 * time.Second):
+						t.Fatal("shutdown timed out")
+					}
+					return
+				case err := <-done:
+					t.Fatalf("node exited before delivery: %v", err)
+				case <-timeout.C:
+					t.Fatal("delivery timed out")
+				}
+			}
+		})
+	}
+}
+
+// Another node's credentials stop the demo before it listens, with no
+// fallback to plaintext.
+func TestRunRejectsWrongCredentials(t *testing.T) {
+	addrs := []string{"127.0.0.1:7101", "127.0.0.1:7102"}
+	creds := filepath.Join(t.TempDir(), "creds")
+	if err := peertls.Generate(creds, addrs, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	opts, err := parseOptions([]string{"-id", "1", "-f", "0", "-peers", strings.Join(addrs, ","),
+		"-tls-dir", filepath.Join(creds, "node-2")}, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run(t.Context(), opts, log.New(io.Discard, "", 0)); err == nil || !strings.Contains(err.Error(), "does not name") {
+		t.Fatalf("run with node 2's credentials = %v, want an identity error", err)
 	}
 }
 

@@ -13,10 +13,10 @@ import (
 
 	"github.com/alkval/gorums-brb/internal/brb"
 	"github.com/alkval/gorums-brb/internal/cluster"
+	"github.com/alkval/gorums-brb/internal/peertls"
 	"github.com/relab/gorums"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 type options struct {
@@ -26,6 +26,7 @@ type options struct {
 	broadcast  string   // optional value, repeated with distinct sequence numbers
 	count      int
 	optimistic bool
+	tlsDir     string // empty selects plaintext with unverified sender IDs
 }
 
 func parseOptions(args []string, output io.Writer) (options, error) {
@@ -39,6 +40,7 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.StringVar(&opts.broadcast, "broadcast", "", "nonempty value to broadcast after all peers connect")
 	flags.IntVar(&opts.count, "count", 1, "number of broadcasts, using sequences 1 through count")
 	flags.BoolVar(&opts.optimistic, "optimistic", false, "use experimental rotating committees without recovery (all nodes)")
+	flags.StringVar(&opts.tlsDir, "tls-dir", "", "this node's credentials (ca.pem, node.pem, node-key.pem); empty runs plaintext")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
@@ -69,7 +71,10 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 }
 
 func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
-	peers := gorums.WithNodeList(opts.peers)
+	peers, creds, serverOpts, err := peertls.Transport(opts.tlsDir, uint32(opts.id), opts.peers)
+	if err != nil {
+		return err
+	}
 	// Keep connection retries short while peers are started in separate terminals.
 	connectionBackoff := backoff.DefaultConfig
 	connectionBackoff.BaseDelay = 100 * time.Millisecond
@@ -79,15 +84,15 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		return fmt.Errorf("brb: listen: %w", err)
 	}
 	defer listener.Close()
-	server := gorums.NewServer(gorums.WithPeers(uint32(opts.id), peers,
+	server := gorums.NewServer(append(serverOpts, gorums.WithPeers(uint32(opts.id), peers,
 		gorums.WithBackoff(connectionBackoff),
 		gorums.WithGRPCDialOptions(
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			creds,
 			// Peers start separately. Let initial streams wait for their servers
 			// rather than fail before the other terminals have started.
 			grpc.WithDefaultCallOptions(grpc.WaitForReady(true)),
 		),
-	))
+	))...)
 	runCtx, cancel := context.WithCancel(ctx)
 	var node *brb.Replica
 	defer func() {
@@ -118,6 +123,11 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
 	logger.Printf("node %d listening on %s (n=%d f=%d optimistic=%t)", opts.id, listener.Addr(), len(opts.peers), opts.f, opts.optimistic)
+	if opts.tlsDir == "" {
+		logger.Printf("node %d: plaintext, sender IDs are not verified", opts.id)
+	} else {
+		logger.Printf("node %d: TLS, peers verified as %s", opts.id, peertls.Identity(uint32(opts.id)))
+	}
 	if opts.broadcast != "" {
 		// This demo assumes established connections. Wait for the full
 		// membership before asking the adapter to start the broadcast.
