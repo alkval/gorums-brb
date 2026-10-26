@@ -12,5 +12,7 @@ Do not edit generated Go files.
 All replicas must use the same generated RPC names. Old binaries using
 `Broadcast.Send` are incompatible with this version.
 
-A broadcast ID contains the origin and sequence. The logical sender field is
-trusted until upstream authenticated peer verification is integrated.
+A broadcast ID contains the origin and sequence. There is no sender field:
+receivers use the peer ID that Gorums reports for the stream. Field number 3 and
+the name `sender` are reserved, so binaries from before this change cannot join
+a group.
