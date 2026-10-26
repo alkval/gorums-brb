@@ -158,7 +158,7 @@ func TestGorumsFourNodesWithSilentPeer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	cc := systems[0].PeerConfig().Context(ctx)
-	msg := phaseMessage(1, id, []byte(lateValue))
+	msg := phaseMessage(id, []byte(lateValue))
 	if err := brbv1.Propose(cc, msg).Send(); err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	node.ctx = ctx
-	if err := brbv1.Ready(node.config.Context(ctx), phaseMessage(node.self, id, value)).Send(); err == nil {
+	if err := brbv1.Ready(node.config.Context(ctx), phaseMessage(id, value)).Send(); err == nil {
 		t.Fatal("expected multicast to fail with a cancelled context")
 	}
 	node.performActions(actions)
@@ -381,9 +381,9 @@ func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
 func TestPhaseMessageOwnsPayload(t *testing.T) {
 	value := []byte("original")
 	id := BroadcastID{1, 2}
-	msg := phaseMessage(3, id, value)
+	msg := phaseMessage(id, value)
 	value[0] = 'X'
-	if msg.GetSender() != 3 || msg.GetId().GetOrigin() != 1 || msg.GetId().GetSequence() != 2 || string(msg.GetValue()) != "original" {
+	if msg.GetId().GetOrigin() != 1 || msg.GetId().GetSequence() != 2 || string(msg.GetValue()) != "original" {
 		t.Fatal("phase message lost its identifier or shared the input payload")
 	}
 }
@@ -404,7 +404,7 @@ func TestWindowErrorPersistsAfterSuccessfulDelivery(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if err := brbv1.Echo(systems[0].PeerConfig().Context(ctx), phaseMessage(1, BroadcastID{1, ^uint64(0)}, []byte("future"))).Send(); err != nil {
+	if err := brbv1.Echo(systems[0].PeerConfig().Context(ctx), phaseMessage(BroadcastID{1, ^uint64(0)}, []byte("future"))).Send(); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -550,5 +550,61 @@ func TestTrafficSnapshotsStayConsistentDuringConcurrentSends(t *testing.T) {
 	wg.Wait()
 	if got := node.Traffic(PhaseEcho); got != final || !consistent(final) {
 		t.Fatalf("final traffic %+v, later %+v", final, got)
+	}
+}
+
+func TestHandleRejectsNonMemberSenders(t *testing.T) {
+	m := newTestMachine(t)
+	node := &Replica{self: 1, machine: m, ctx: t.Context()}
+	msg := phaseMessage(BroadcastID{1, 1}, []byte("v"))
+	// 0 is an anonymous client, 5 is outside 1..4, and 1<<20 is a dynamically
+	// assigned client ID in Gorums. None of them may allocate protocol state.
+	for _, sender := range []ProcessID{0, 5, 1 << 20} {
+		node.handleFrom(sender, PhaseEcho, msg)
+		if len(m.instances) != 0 {
+			t.Fatalf("sender %d allocated state", sender)
+		}
+	}
+	node.handleFrom(2, PhaseEcho, msg)
+	if s := m.instances[BroadcastID{1, 1}]; s == nil || !s.echoes.seen[2] || len(s.echoes.seen) != 1 {
+		t.Fatal("member vote was not recorded under its own ID")
+	}
+}
+
+// The vote is counted under the stream's peer ID. The message carries no
+// sender, so a replica cannot cast a vote under another ID through the payload.
+func TestGorumsAttributesVotesToTransportSender(t *testing.T) {
+	handled := make(chan struct{}, 1)
+	observe := gorums.WithServerInterceptors(func(ctx gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
+		out, err := next(ctx, msg)
+		if msg.GetMethod() == "brb.v1.Bracha.Ready" {
+			handled <- struct{}{}
+		}
+		return out, err
+	})
+	nodes, systems, _ := localNodes(t, 4, 1, gorums.WithLocalServerOptions(observe))
+	serve(t, systems)
+	id := BroadcastID{Origin: 1, Sequence: 1}
+	var toNode1 gorums.Config
+	for _, peer := range systems[1].PeerConfig() {
+		if peer.ID() == 1 {
+			toNode1 = gorums.Config{peer}
+		}
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := brbv1.Ready(toNode1.Context(ctx), phaseMessage(id, []byte("v"))).Send(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-handled:
+	case <-ctx.Done():
+		t.Fatal("READY was not handled")
+	}
+	m := nodes[0].machine
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if s := m.instances[id]; s == nil || !s.readies.seen[2] || len(s.readies.seen) != 1 {
+		t.Fatal("READY from node 2 was not counted under ID 2")
 	}
 }

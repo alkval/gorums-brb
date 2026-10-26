@@ -34,8 +34,10 @@ type observingReplica struct {
 	observed chan<- observedFault
 }
 
-func (r observingReplica) record(phase string, msg *brbv1.PhaseMessage) {
-	if msg.GetSender() == 4 {
+// The faulty replica is node 4. Its messages are recognized by the transport
+// sender, the same identity the replica counts votes under.
+func (r observingReplica) record(phase string, ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
+	if ctx.SenderID() == 4 {
 		r.observed <- observedFault{r.id, phase,
 			brb.BroadcastID{Origin: brb.ProcessID(msg.GetId().GetOrigin()), Sequence: msg.GetId().GetSequence()},
 			string(msg.GetValue())}
@@ -43,12 +45,12 @@ func (r observingReplica) record(phase string, msg *brbv1.PhaseMessage) {
 }
 
 func (r observingReplica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
-	r.record("propose", msg)
+	r.record("propose", ctx, msg)
 	r.Replica.Propose(ctx, msg)
 }
 
 func (r observingReplica) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
-	r.record("echo", msg)
+	r.record("echo", ctx, msg)
 	r.Replica.Echo(ctx, msg)
 }
 

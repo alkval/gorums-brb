@@ -9,8 +9,8 @@ import (
 	"github.com/relab/gorums"
 )
 
-// Faults keep their own identity. These are controlled faulty behaviors, not
-// protection against a process that forges another replica's sender field.
+// Faults keep their own identity, because receivers take the sender from the
+// transport rather than from the message.
 type faultyReplica struct {
 	ctx    context.Context
 	server *gorums.Server
@@ -23,7 +23,7 @@ func registerFault(ctx context.Context, server *gorums.Server, mode string) {
 
 func (p *faultyReplica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	ctx.Release()
-	if p.mode != "wrong-echo" || msg.GetId() == nil || msg.GetSender() != msg.GetId().GetOrigin() {
+	if p.mode != "wrong-echo" || msg.GetId() == nil || ctx.SenderID() != msg.GetId().GetOrigin() {
 		return
 	}
 	value := append([]byte(nil), msg.GetValue()...)
@@ -34,7 +34,7 @@ func (p *faultyReplica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessag
 	}
 	// The fault intentionally sends a value different from the proposal.
 	_ = brbv1.Echo(p.server.PeerConfig().Context(p.ctx), brbv1.PhaseMessage_builder{
-		Id: msg.GetId(), Sender: p.server.NodeID(), Value: value,
+		Id: msg.GetId(), Value: value,
 	}.Build()).Send()
 }
 
@@ -50,13 +50,13 @@ func equivocate(ctx context.Context, server *gorums.Server) error {
 		if i%2 != 0 {
 			value = []byte("B")
 		}
-		msg := brbv1.PhaseMessage_builder{Id: id, Sender: server.NodeID(), Value: value}.Build()
+		msg := brbv1.PhaseMessage_builder{Id: id, Value: value}.Build()
 		if err := brbv1.Propose(gorums.Config{peer}.Context(ctx), msg).Send(); err != nil {
 			return fmt.Errorf("faulty proposal: %w", err)
 		}
 	}
 	return brbv1.Echo(server.PeerConfig().Context(ctx), brbv1.PhaseMessage_builder{
-		Id: id, Sender: server.NodeID(), Value: []byte("A"),
+		Id: id, Value: []byte("A"),
 	}.Build()).Send()
 }
 

@@ -342,11 +342,18 @@ func TestRejectMismatchedVariant(t *testing.T) {
 		m := optimisticMachine(t, 4, 1, 1)
 		m.optimistic = optimistic
 		node := &Replica{self: 1, machine: m, ctx: t.Context()}
-		msg := phaseMessage(1, BroadcastID{1, 1}, []byte("v"))
+		msg := phaseMessage(BroadcastID{1, 1}, []byte("v"))
 		msg.SetOptimistic(!optimistic)
-		node.Propose(gorums.ServerContext{Context: t.Context()}, msg)
+		node.handleFrom(1, PhaseEcho, msg)
 		if len(m.instances) != 0 {
 			t.Fatal("accepted mismatched protocol")
+		}
+		// The same vote from the same member is accepted with the right variant.
+		// One ECHO is below every threshold, so no multicast is attempted.
+		msg.SetOptimistic(optimistic)
+		node.handleFrom(1, PhaseEcho, msg)
+		if len(m.instances) != 1 {
+			t.Fatal("rejected a matching protocol variant")
 		}
 	}
 }

@@ -35,12 +35,15 @@ message BroadcastID {
 }
 
 // PhaseMessage carries the value associated with a broadcast instance.
+// The sender is the peer identity reported by Gorums, not a message field.
 message PhaseMessage {
+  // Field 3 held a self-declared sender ID. Every run restarts the whole group,
+  // so mixed versions are unsupported.
+  reserved 3;
+  reserved sender;
+
   BroadcastID id = 1;
   bytes value = 2;
-  // sender is trusted by the prototype. A future authenticated transport
-  // must bind this claim to the actual peer identity.
-  uint32 sender = 3;
   // All members must run the same variant. False selects ordinary Bracha.
   bool optimistic = 4;
 }

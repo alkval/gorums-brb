@@ -95,11 +95,11 @@ func (b0 BroadcastID_builder) Build() *BroadcastID {
 }
 
 // PhaseMessage carries the value associated with a broadcast instance.
+// The sender is the peer identity reported by Gorums, not a message field.
 type PhaseMessage struct {
 	state                 protoimpl.MessageState `protogen:"opaque.v1"`
 	xxx_hidden_Id         *BroadcastID           `protobuf:"bytes,1,opt,name=id"`
 	xxx_hidden_Value      []byte                 `protobuf:"bytes,2,opt,name=value"`
-	xxx_hidden_Sender     uint32                 `protobuf:"varint,3,opt,name=sender"`
 	xxx_hidden_Optimistic bool                   `protobuf:"varint,4,opt,name=optimistic"`
 	unknownFields         protoimpl.UnknownFields
 	sizeCache             protoimpl.SizeCache
@@ -144,13 +144,6 @@ func (x *PhaseMessage) GetValue() []byte {
 	return nil
 }
 
-func (x *PhaseMessage) GetSender() uint32 {
-	if x != nil {
-		return x.xxx_hidden_Sender
-	}
-	return 0
-}
-
 func (x *PhaseMessage) GetOptimistic() bool {
 	if x != nil {
 		return x.xxx_hidden_Optimistic
@@ -167,10 +160,6 @@ func (x *PhaseMessage) SetValue(v []byte) {
 		v = []byte{}
 	}
 	x.xxx_hidden_Value = v
-}
-
-func (x *PhaseMessage) SetSender(v uint32) {
-	x.xxx_hidden_Sender = v
 }
 
 func (x *PhaseMessage) SetOptimistic(v bool) {
@@ -193,9 +182,6 @@ type PhaseMessage_builder struct {
 
 	Id    *BroadcastID
 	Value []byte
-	// sender is trusted by the prototype. A future authenticated transport
-	// must bind this claim to the actual peer identity.
-	Sender uint32
 	// All members must run the same variant. False selects ordinary Bracha.
 	Optimistic bool
 }
@@ -206,7 +192,6 @@ func (b0 PhaseMessage_builder) Build() *PhaseMessage {
 	_, _ = b, x
 	x.xxx_hidden_Id = b.Id
 	x.xxx_hidden_Value = b.Value
-	x.xxx_hidden_Sender = b.Sender
 	x.xxx_hidden_Optimistic = b.Optimistic
 	return m0
 }
@@ -218,14 +203,13 @@ const file_proto_brb_v1_brb_proto_rawDesc = "" +
 	"\x16proto/brb/v1/brb.proto\x12\x06brb.v1\x1a\x1bgoogle/protobuf/empty.proto\x1a\fgorums.proto\"A\n" +
 	"\vBroadcastID\x12\x16\n" +
 	"\x06origin\x18\x01 \x01(\rR\x06origin\x12\x1a\n" +
-	"\bsequence\x18\x02 \x01(\x04R\bsequence\"\x81\x01\n" +
+	"\bsequence\x18\x02 \x01(\x04R\bsequence\"w\n" +
 	"\fPhaseMessage\x12#\n" +
 	"\x02id\x18\x01 \x01(\v2\x13.brb.v1.BroadcastIDR\x02id\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value\x12\x16\n" +
-	"\x06sender\x18\x03 \x01(\rR\x06sender\x12\x1e\n" +
+	"\x05value\x18\x02 \x01(\fR\x05value\x12\x1e\n" +
 	"\n" +
 	"optimistic\x18\x04 \x01(\bR\n" +
-	"optimistic2\xfd\x01\n" +
+	"optimisticJ\x04\b\x03\x10\x04R\x06sender2\xfd\x01\n" +
 	"\x06Bracha\x12=\n" +
 	"\aPropose\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12:\n" +
 	"\x04Echo\x12\x14.brb.v1.PhaseMessage\x1a\x16.google.protobuf.Empty\"\x04\x98\xb5\x18\x01\x12;\n" +
