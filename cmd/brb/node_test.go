@@ -61,6 +61,7 @@ func TestRejectInvalidOptions(t *testing.T) {
 		{"wildcard host", []string{"-id", "1", "-f", "0", "-peers", "0.0.0.0:7001"}},
 		{"IPv6 wildcard", []string{"-id", "1", "-f", "0", "-peers", "[::]:7001"}},
 		{"positional argument", []string{"-id", "1", "-f", "0", "-peers", "127.0.0.1:7001", "extra"}},
+		{"two variants", []string{"-id", "1", "-f", "0", "-peers", "127.0.0.1:7001", "-optimistic", "-ready-digest"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseOptions(tc.args, io.Discard); err == nil {
@@ -157,8 +158,12 @@ func TestRunRejectsOccupiedPort(t *testing.T) {
 }
 
 func TestRunBroadcastsToSelf(t *testing.T) {
-	for _, useTLS := range []bool{false, true} {
-		t.Run(map[bool]string{false: "plaintext", true: "tls"}[useTLS], func(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		useTLS, digest bool
+	}{{"plaintext", false, false}, {"tls", true, false}, {"tls/ready-digest", true, true}} {
+		useTLS := tc.useTLS
+		t.Run(tc.name, func(t *testing.T) {
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -168,6 +173,9 @@ func TestRunBroadcastsToSelf(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := []string{"-id", "1", "-f", "0", "-peers", addr, "-broadcast", "hello"}
+			if tc.digest {
+				args = append(args, "-ready-digest")
+			}
 			mode := "node 1: plaintext, sender IDs are not verified"
 			if useTLS {
 				creds := filepath.Join(t.TempDir(), "creds")

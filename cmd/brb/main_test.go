@@ -22,7 +22,7 @@ func TestModeSelection(t *testing.T) {
 			t.Fatalf("%v: %v", args, err)
 		}
 	}
-	for _, flag := range []string{"-optimistic", "-plaintext"} {
+	for _, flag := range []string{"-optimistic", "-plaintext", "-ready-digest"} {
 		mode, _, err = commandMode([]string{flag, "-mode=bench"})
 		if err != nil || mode != "bench" {
 			t.Fatalf("%s flag swallowed mode: %s %v", flag, mode, err)

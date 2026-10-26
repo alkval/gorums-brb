@@ -26,6 +26,7 @@ type options struct {
 	broadcast  string   // optional value, repeated with distinct sequence numbers
 	count      int
 	optimistic bool
+	digest     bool
 	tlsDir     string // empty selects plaintext with unverified sender IDs
 }
 
@@ -40,12 +41,16 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	flags.StringVar(&opts.broadcast, "broadcast", "", "nonempty value to broadcast after all peers connect")
 	flags.IntVar(&opts.count, "count", 1, "number of broadcasts, using sequences 1 through count")
 	flags.BoolVar(&opts.optimistic, "optimistic", false, "use experimental rotating committees without recovery (all nodes)")
+	flags.BoolVar(&opts.digest, "ready-digest", false, "send a SHA-256 digest instead of the value in READY (all nodes)")
 	flags.StringVar(&opts.tlsDir, "tls-dir", "", "this node's credentials (ca.pem, node.pem, node-key.pem); empty runs plaintext")
 	if err := flags.Parse(args); err != nil {
 		return opts, err
 	}
 	if flags.NArg() != 0 {
 		return opts, errors.New("brb: unexpected positional arguments")
+	}
+	if opts.optimistic && opts.digest {
+		return opts, errors.New("brb: -optimistic and -ready-digest cannot be combined")
 	}
 	if opts.count < 1 {
 		return opts, errors.New("brb: -count must be positive")
@@ -111,8 +116,11 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		}
 	}()
 	newReplica := brb.NewReplica
-	if opts.optimistic {
+	switch {
+	case opts.optimistic:
 		newReplica = brb.NewOptimisticReplica
+	case opts.digest:
+		newReplica = brb.NewReadyDigestReplica
 	}
 	node, err = newReplica(runCtx, server, opts.f, func(d brb.Delivery) {
 		logBroadcast(logger, opts.id, "delivered", d.ID, d.Value)
@@ -122,7 +130,7 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
-	logger.Printf("node %d listening on %s (n=%d f=%d optimistic=%t)", opts.id, listener.Addr(), len(opts.peers), opts.f, opts.optimistic)
+	logger.Printf("node %d listening on %s (n=%d f=%d optimistic=%t ready-digest=%t)", opts.id, listener.Addr(), len(opts.peers), opts.f, opts.optimistic, opts.digest)
 	if opts.tlsDir == "" {
 		logger.Printf("node %d: plaintext, sender IDs are not verified", opts.id)
 	} else {

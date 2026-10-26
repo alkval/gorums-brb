@@ -11,14 +11,17 @@ import (
 
 // Faults keep their own identity, because receivers take the sender from the
 // transport rather than from the message.
+// Their messages carry the run's variant, so correct replicas do not discard
+// them as mismatched. They send only full-value PROPOSE and ECHO messages.
 type faultyReplica struct {
-	ctx    context.Context
-	server *gorums.Server
-	mode   string
+	ctx     context.Context
+	server  *gorums.Server
+	mode    string
+	variant brbv1.Variant
 }
 
-func registerFault(ctx context.Context, server *gorums.Server, mode string) {
-	brbv1.RegisterBrachaServer(server, &faultyReplica{ctx, server, mode})
+func registerFault(ctx context.Context, server *gorums.Server, mode string, variant brbv1.Variant) {
+	brbv1.RegisterBrachaServer(server, &faultyReplica{ctx, server, mode, variant})
 }
 
 func (p *faultyReplica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
@@ -34,7 +37,7 @@ func (p *faultyReplica) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessag
 	}
 	// The fault intentionally sends a value different from the proposal.
 	_ = brbv1.Echo(p.server.PeerConfig().Context(p.ctx), brbv1.PhaseMessage_builder{
-		Id: msg.GetId(), Value: value,
+		Id: msg.GetId(), Value: value, Variant: p.variant,
 	}.Build()).Send()
 }
 
@@ -42,7 +45,7 @@ func (*faultyReplica) Echo(gorums.ServerContext, *brbv1.PhaseMessage)  {}
 func (*faultyReplica) Ready(gorums.ServerContext, *brbv1.PhaseMessage) {}
 func (*faultyReplica) QEcho(gorums.ServerContext, *brbv1.PhaseMessage) {}
 
-func equivocate(ctx context.Context, server *gorums.Server) error {
+func equivocate(ctx context.Context, server *gorums.Server, variant brbv1.Variant) error {
 	id := brbv1.BroadcastID_builder{Origin: server.NodeID(), Sequence: 1}.Build()
 	// Alternate proposals across recipients, then supply one ECHO for A.
 	for i, peer := range server.PeerConfig() {
@@ -50,19 +53,19 @@ func equivocate(ctx context.Context, server *gorums.Server) error {
 		if i%2 != 0 {
 			value = []byte("B")
 		}
-		msg := brbv1.PhaseMessage_builder{Id: id, Value: value}.Build()
+		msg := brbv1.PhaseMessage_builder{Id: id, Value: value, Variant: variant}.Build()
 		if err := brbv1.Propose(gorums.Config{peer}.Context(ctx), msg).Send(); err != nil {
 			return fmt.Errorf("faulty proposal: %w", err)
 		}
 	}
 	return brbv1.Echo(server.PeerConfig().Context(ctx), brbv1.PhaseMessage_builder{
-		Id: id, Value: []byte("A"),
+		Id: id, Value: []byte("A"), Variant: variant,
 	}.Build()).Send()
 }
 
 func runFault(ctx context.Context, node *benchmarkNode, opts Options) error {
 	if opts.fault == "equivocate" {
-		if err := equivocate(ctx, node.server); err != nil {
+		if err := equivocate(ctx, node.server, opts.variant()); err != nil {
 			return err
 		}
 	}
