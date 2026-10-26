@@ -92,6 +92,31 @@ func TestDigestThresholdsNeedPayload(t *testing.T) {
 	}
 }
 
+// With the value already stored, delivery must wait for exactly 2f+1 distinct
+// READYs. Withholding the value until the end cannot tell 2f from 2f+1.
+func TestDigestDeliversAtThresholdWithPayloadFirst(t *testing.T) {
+	for _, cfg := range [][2]int{{1, 0}, {3, 0}, {4, 1}, {5, 1}, {6, 1}, {7, 2}, {8, 2}, {10, 3}} {
+		n, f := cfg[0], cfg[1]
+		t.Run(fmt.Sprint(cfg), func(t *testing.T) {
+			m := digestMachine(t, n, f)
+			id := BroadcastID{1, 1}
+			handle(t, m, 1, PhasePropose, id, "v")
+			for i := 1; i <= 2*f+1; i++ {
+				actions := readyVote(t, m, ProcessID(i), id, sum("v"))
+				if got, want := countType(actions, ActionDeliver), map[bool]int{false: 0, true: 1}[i == 2*f+1]; got != want {
+					t.Fatalf("%d deliveries after %d READYs, want %d", got, i, want)
+				}
+				if i < 2*f+1 {
+					// A repeated READY from the same sender must not count again.
+					if actions := readyVote(t, m, ProcessID(i), id, sum("v")); len(actions) != 0 {
+						t.Fatalf("duplicate READY acted: %v", actions)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestDigestQuorumBeforePayloadDeliversOnce(t *testing.T) {
 	for _, supply := range []Phase{PhaseEcho, PhasePropose} {
 		t.Run(fmt.Sprint(supply), func(t *testing.T) {
@@ -375,6 +400,18 @@ func TestDigestSimulations(t *testing.T) {
 		}
 	}
 	for seed := range int64(30) {
+		// The faulty origin gives its extra ECHO and READY for A only to node
+		// 2. Node 2 then holds two READYs, one short of delivery. A threshold
+		// of 2f would let it deliver alone and violate totality.
+		queue := []event{
+			{1, 2, PhasePropose, id, "A"}, {1, 3, PhasePropose, id, "A"}, {1, 4, PhasePropose, id, "B"},
+			{1, 2, PhaseEcho, id, "A"}, {1, 2, PhaseReady, id, string(sum("A"))},
+		}
+		if result := simulateWith(t, newDigest, 4, 1, []ProcessID{2, 3, 4}, queue, seed); len(result) != 0 {
+			t.Fatalf("delivered without a READY quorum, seed %d: %v", seed, result)
+		}
+	}
+	for seed := range int64(30) {
 		// The faulty origin proposes A to nodes 2 and 3 and B to node 4, adds
 		// an ECHO for A at node 2 and a READY digest for A at node 3. Node 4
 		// echoed B, yet must still deliver A, with A's value from correct ECHOs.
@@ -460,8 +497,16 @@ func TestGorumsReadyDigestDelivery(t *testing.T) {
 	for _, ch := range deliveries {
 		awaitDelivery(t, ch, id, string(value))
 	}
-	// Every replica counted its READY before delivering. Each READY carries
-	// only the digest, so its size does not depend on the 4 KiB value.
+	// A replica can deliver from the other replicas' READYs before its own
+	// READY reaches accounting, so wait for every READY call, then freeze the
+	// counters. Each READY carries only the digest, so its size does not depend
+	// on the 4 KiB value.
+	for i, node := range nodes {
+		if !waitFor(t, 5*time.Second, func() bool { return node.Traffic(PhaseReady).Calls == 1 }) {
+			t.Fatalf("node %d never recorded its READY", i+1)
+		}
+		node.FinalizeTraffic()
+	}
 	readySize := uint64(proto.Size(nodes[0].readyDigestMessage(id, sum(string(value)))))
 	if readySize >= 64 {
 		t.Fatalf("digest READY is %d bytes", readySize)

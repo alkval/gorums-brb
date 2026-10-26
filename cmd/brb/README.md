@@ -22,10 +22,17 @@ Every replica should deliver sequences 1, 2 and 3 once. Their order may differ.
 Stop all replicas with Ctrl+C before repeating. The demo uses `-broadcast` and
 `-count`. Payload sizes and paced workloads belong to benchmark mode.
 
-For the experimental optimistic variant, add `-optimistic` to **every** node's
-command. For READY digests, add `-ready-digest` to every node instead. Keep the same membership and f on all nodes and restart the whole group
-when changing variants. It uses rotating committees and has no recovery.
-Selected faulty members can stall delivery. See [protocol details](../../internal/brb/OPTIMISTIC.md).
+Two optional variants change the protocol. Select at most one, give it to
+**every** node, keep the same membership and f on all nodes, and restart the
+whole group when changing variants.
+
+- `-optimistic` runs the experimental optimistic path. It uses rotating
+  committees and has no recovery, so selected faulty members can stall
+  delivery. See [the variant description](../../internal/brb/OPTIMISTIC.md).
+- `-ready-digest` keeps Bracha's thresholds and full values in PROPOSE and ECHO,
+  but sends only the value's SHA-256 digest in READY. A replica that never
+  receives a matching PROPOSE or ECHO cannot deliver. See
+  [READY digests](../../docs/Protocol.md#ready-digests).
 
 Without `-tls-dir` the demo runs plaintext and logs that sender IDs are not
 verified. To authenticate it, give each node its own credential directory as
