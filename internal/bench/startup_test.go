@@ -34,7 +34,7 @@ func TestStartupWaitsForEveryReplica(t *testing.T) {
 				for i, peer := range peers {
 					var err error
 					opts[i], err = ParseOptions([]string{
-						"-self=" + peer, "-remotes=" + strings.Join(peers, ","),
+						"-plaintext", "-self=" + peer, "-remotes=" + strings.Join(peers, ","),
 						"-f=2", "-output=" + filepath.Join(t.TempDir(), "result.binpb"),
 						fmt.Sprintf("-optimistic=%t", optimistic), fmt.Sprintf("-fail-fast=%t", failFast),
 					}, io.Discard)

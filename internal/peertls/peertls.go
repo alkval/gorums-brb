@@ -14,7 +14,9 @@ import (
 	"strconv"
 
 	"github.com/relab/gorums"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // Files in a replica's credential directory. The directory holds only this
@@ -130,4 +132,21 @@ func sans(id uint32, addr string) (*url.URL, []net.IP, []string, error) {
 		return nil, nil, nil, errors.New("peertls: address has no host")
 	}
 	return uri, nil, []string{host}, nil
+}
+
+// Transport returns the peer node source and gRPC credentials for replica self
+// in the ordered group addrs. With a credential directory, peers carry TLS
+// identities and Gorums verifies every peer stream. With an empty dir the
+// transport is plaintext and sender IDs are not verified. Errors are returned
+// before any connection is made, so a TLS setup never falls back to plaintext.
+func Transport(dir string, self uint32, addrs []string) (gorums.NodeSource, grpc.DialOption, []gorums.ServerOption, error) {
+	if dir == "" {
+		return gorums.WithNodeList(addrs), grpc.WithTransportCredentials(insecure.NewCredentials()), nil, nil
+	}
+	server, client, err := Load(dir, self)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return gorums.WithNodes(Nodes(addrs)), grpc.WithTransportCredentials(client),
+		[]gorums.ServerOption{gorums.WithGRPCServerOptions(grpc.Creds(server))}, nil
 }

@@ -78,7 +78,8 @@ func commandMode(args []string) (string, []string, error) {
 		// boolean flags may omit a value in the two supported modes.
 		name := strings.TrimLeft(arg, "-")
 		if strings.HasPrefix(arg, "-") && !strings.Contains(arg, "=") &&
-			name != "h" && name != "help" && name != "verbose" && name != "fail-fast" && name != "optimistic" && i+1 < len(args) {
+			name != "h" && name != "help" && name != "verbose" && name != "fail-fast" && name != "optimistic" &&
+			name != "plaintext" && i+1 < len(args) {
 			i++
 			rest = append(rest, args[i])
 		}

@@ -17,9 +17,11 @@ func TestModeSelection(t *testing.T) {
 			t.Fatalf("%v: %v", args, err)
 		}
 	}
-	mode, _, err = commandMode([]string{"-optimistic", "-mode=bench"})
-	if err != nil || mode != "bench" {
-		t.Fatalf("optimistic flag swallowed mode: %s %v", mode, err)
+	for _, flag := range []string{"-optimistic", "-plaintext"} {
+		mode, _, err = commandMode([]string{flag, "-mode=bench"})
+		if err != nil || mode != "bench" {
+			t.Fatalf("%s flag swallowed mode: %s %v", flag, mode, err)
+		}
 	}
 	for _, args := range [][]string{{"-mode"}, {"-mode=bad"}, {"-mode=node", "-mode=bench"}, {"-mode=node", "-workers=1"}, {"-mode=bench", "-broadcast=hello"}} {
 		if err := execute(t.Context(), args, io.Discard); err == nil {

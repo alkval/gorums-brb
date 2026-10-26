@@ -16,10 +16,10 @@ import (
 
 	"github.com/alkval/gorums-brb/internal/brb"
 	"github.com/alkval/gorums-brb/internal/cluster"
+	"github.com/alkval/gorums-brb/internal/peertls"
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchkit"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const benchmarkName = "BrachaLocalDelivery"
@@ -32,6 +32,15 @@ type Options struct {
 	fault      string
 	faultNode  uint
 	optimistic bool
+	tlsDir     string
+	plaintext  bool
+}
+
+func (o Options) auth() string {
+	if o.plaintext {
+		return "none"
+	}
+	return "tls"
 }
 
 func (o Options) benchmarkName() string {
@@ -50,6 +59,8 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	fs.BoolVar(&opts.failFast, "fail-fast", false, "report unavailable-peer sends promptly for fault diagnostics; correct peers must already be connected")
 	fs.StringVar(&opts.fault, "fault", "none", "faulty replica behavior: none, silent, equivocate, wrong-echo")
 	fs.UintVar(&opts.faultNode, "fault-node", 0, "faulty replica ID (default: last replica)")
+	fs.StringVar(&opts.tlsDir, "tls-dir", "", "this replica's credentials (ca.pem, node.pem, node-key.pem); required unless -plaintext")
+	fs.BoolVar(&opts.plaintext, "plaintext", false, "run without TLS and with unverified sender IDs, only for a labelled transport comparison")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -97,6 +108,9 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	case "none", "silent", "equivocate", "wrong-echo":
 	default:
 		return opts, errors.New("brb: unknown fault behavior")
+	}
+	if (opts.tlsDir == "") == !opts.plaintext {
+		return opts, errors.New("brb bench: use exactly one of -tls-dir and -plaintext")
 	}
 	if opts.FaultKillAfter < 0 || (opts.FaultKillAfter > 0 && opts.FaultKillAfter >= opts.Duration) {
 		return opts, errors.New("brb: fault-kill-after must be positive and shorter than the workload")
@@ -155,7 +169,7 @@ func Run(parent context.Context, opts Options) error {
 		return fmt.Errorf("brb bench: invalid run: %w", err)
 	}
 	logTraffic(opts.selfID, node.replica)
-	label := fmt.Sprintf("node %d f=%d", opts.selfID, opts.f)
+	label := fmt.Sprintf("node %d f=%d auth=%s", opts.selfID, opts.f, opts.auth())
 	if opts.optimistic {
 		label += " optimistic=true"
 	}
@@ -201,14 +215,17 @@ func (t *deliveryTracker) delivered(d brb.Delivery) {
 }
 
 func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*benchmarkNode, error) {
+	nodes, creds, serverOpts, err := peertls.Transport(opts.tlsDir, opts.selfID, opts.Remotes)
+	if err != nil {
+		return nil, err
+	}
 	listener, err := net.Listen("tcp", opts.Self)
 	if err != nil {
 		return nil, err
 	}
 	ready := make(chan struct{})
-	server := gorums.NewServer(gorums.WithPeers(opts.selfID, gorums.WithNodeList(opts.Remotes),
-		gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.WaitForReady(!opts.failFast))),
+	server := gorums.NewServer(append(serverOpts, gorums.WithPeers(opts.selfID, nodes,
+		gorums.WithGRPCDialOptions(creds, grpc.WithDefaultCallOptions(grpc.WaitForReady(!opts.failFast))),
 	), gorums.WithServerInterceptors(func(sc gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
 		if strings.HasPrefix(msg.GetMethod(), "brb.v1.Bracha.") {
 			// Startup probes must still run while early BRB messages wait.
@@ -220,7 +237,7 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 			}
 		}
 		return next(sc, msg)
-	}))
+	}))...)
 	control := benchkit.NewControl()
 	done := control.ArmDone(len(opts.Remotes))
 	probed := make(chan struct{})

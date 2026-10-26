@@ -22,7 +22,7 @@ import (
 )
 
 func TestParseOptions(t *testing.T) {
-	base := []string{"-self=127.0.0.1:9000", "-remotes=127.0.0.1:9000", "-f=0", "-output=result.binpb"}
+	base := []string{"-plaintext", "-self=127.0.0.1:9000", "-remotes=127.0.0.1:9000", "-f=0", "-output=result.binpb"}
 	opts, err := ParseOptions(base, io.Discard)
 	if err != nil || opts.selfID != 1 || opts.failFast {
 		t.Fatalf("valid Options: %+v, %v", opts, err)
@@ -32,7 +32,7 @@ func TestParseOptions(t *testing.T) {
 		"-f=1", "-output=", "-self=0.0.0.0:9000", "-self=127.0.0.1:0",
 		"-self=127.0.0.1:9001", "-remotes=127.0.0.1:9000,127.0.0.1:9000",
 		"-benchmarks=Other", "-stream-mode=dedup", "-cpuprofile=cpu.out",
-		"-rate-step=1", "-call-timeout=1s", "-fault-kill-after=1s", "extra",
+		"-rate-step=1", "-call-timeout=1s", "-fault-kill-after=1s", "-tls-dir=creds", "extra",
 	} {
 		t.Run(extra, func(t *testing.T) {
 			if _, err := ParseOptions(append(append([]string{}, base...), extra), io.Discard); err == nil {
@@ -43,7 +43,7 @@ func TestParseOptions(t *testing.T) {
 }
 
 func TestOptimisticOptions(t *testing.T) {
-	base := []string{"-self=127.0.0.1:9000", "-remotes=127.0.0.1:9000,127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003", "-output=result.binpb", "-optimistic"}
+	base := []string{"-plaintext", "-self=127.0.0.1:9000", "-remotes=127.0.0.1:9000,127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003", "-output=result.binpb", "-optimistic"}
 	opts, err := ParseOptions(base, io.Discard)
 	if err != nil || !opts.optimistic || opts.benchmarkName() != "OptimisticLocalDelivery" {
 		t.Fatalf("options: %+v %v", opts, err)
@@ -104,7 +104,7 @@ func TestLocalDeliveryAndReport(t *testing.T) {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			peer := addresses(t, 1)[0]
 			path := filepath.Join(t.TempDir(), "result.binpb")
-			opts, err := ParseOptions([]string{"-self=" + peer, "-remotes=" + peer, "-f=0",
+			opts, err := ParseOptions([]string{"-plaintext", "-self=" + peer, "-remotes=" + peer, "-f=0",
 				"-output=" + path, "-time=50ms", "-workers=3", fmt.Sprintf("-payload=%d", size)}, io.Discard)
 			if err != nil {
 				t.Fatal(err)
@@ -146,7 +146,7 @@ func TestWindowViolationPreventsReport(t *testing.T) {
 	paths := make([]string, 3)
 	for i, addr := range peers[:3] {
 		paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-		opts, err := ParseOptions([]string{"-self=" + addr, "-remotes=" + strings.Join(peers, ","),
+		opts, err := ParseOptions([]string{"-plaintext", "-self=" + addr, "-remotes=" + strings.Join(peers, ","),
 			"-f=1", "-output=" + paths[i], "-time=500ms", "-rate=20"}, io.Discard)
 		if err != nil {
 			t.Fatal(err)
@@ -210,7 +210,7 @@ func TestWindowViolationPreventsReport(t *testing.T) {
 func TestFixedRateStopsAtMeasurementDeadline(t *testing.T) {
 	peer := addresses(t, 1)[0]
 	path := filepath.Join(t.TempDir(), "result.binpb")
-	opts, err := ParseOptions([]string{"-self=" + peer, "-remotes=" + peer,
+	opts, err := ParseOptions([]string{"-plaintext", "-self=" + peer, "-remotes=" + peer,
 		"-f=0", "-output=" + path, "-time=200ms", "-workers=1", "-rate=1"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func testFourNodesProduceReports(t *testing.T, failFast, optimistic bool) {
 		}
 		peer := peers[i]
 		paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-		args := []string{"-self=" + peer, "-remotes=" + strings.Join(peers, ","),
+		args := []string{"-plaintext", "-self=" + peer, "-remotes=" + strings.Join(peers, ","),
 			"-f=1", "-output=" + paths[i], "-time=200ms", "-workers=2", "-payload=256"}
 		if failFast {
 			args = append(args, "-fail-fast")
@@ -302,7 +302,7 @@ func testFourNodesProduceReports(t *testing.T, failFast, optimistic bool) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			label := fmt.Sprintf("node %d f=1", i+1)
+			label := fmt.Sprintf("node %d f=1 auth=none", i+1)
 			if optimistic {
 				label += " optimistic=true"
 			}
@@ -318,7 +318,7 @@ func testFourNodesProduceReports(t *testing.T, failFast, optimistic bool) {
 
 func TestCancellationWithMissingPeer(t *testing.T) {
 	peers := addresses(t, 2)
-	opts, err := ParseOptions([]string{"-self=" + peers[0], "-remotes=" + strings.Join(peers, ","),
+	opts, err := ParseOptions([]string{"-plaintext", "-self=" + peers[0], "-remotes=" + strings.Join(peers, ","),
 		"-f=0", "-output=" + filepath.Join(t.TempDir(), "result.binpb")}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -406,7 +406,7 @@ func TestBenchmarkWritesReportsAfterPeerCrash(t *testing.T) {
 	paths := make([]string, 3)
 	for i, addr := range peers[:3] {
 		paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-		opts, err := ParseOptions([]string{"-self=" + addr, "-remotes=" + strings.Join(peers, ","),
+		opts, err := ParseOptions([]string{"-plaintext", "-self=" + addr, "-remotes=" + strings.Join(peers, ","),
 			"-f=1", "-fail-fast", "-output=" + paths[i], "-time=300ms", "-rate=20", "-payload=256"}, io.Discard)
 		if err != nil {
 			t.Fatal(err)
@@ -467,7 +467,7 @@ func TestBenchmarkRequiresDeliveryBeforeReporting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "result.binpb")
-	opts, err := ParseOptions([]string{"-self=" + peers[0], "-remotes=" + strings.Join(peers, ","),
+	opts, err := ParseOptions([]string{"-plaintext", "-self=" + peers[0], "-remotes=" + strings.Join(peers, ","),
 		"-f=0", "-fail-fast", "-output=" + path, "-time=50ms", "-rate=1"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)
@@ -506,7 +506,7 @@ func TestBenchmarkRequiresDeliveryBeforeReporting(t *testing.T) {
 func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
 	peer := addresses(t, 1)[0]
 	path := filepath.Join(t.TempDir(), "result.binpb")
-	opts, err := ParseOptions([]string{"-self=" + peer, "-remotes=" + peer, "-f=0",
+	opts, err := ParseOptions([]string{"-plaintext", "-self=" + peer, "-remotes=" + peer, "-f=0",
 		"-output=" + path, "-time=50ms", "-workers=2", "-payload=100"}, io.Discard)
 	if err != nil {
 		t.Fatal(err)

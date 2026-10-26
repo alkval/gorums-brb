@@ -142,7 +142,7 @@ func TestFaultModesWriteOnlyCorrectOriginReports(t *testing.T) {
 			done := make(chan error, 4)
 			for i, addr := range peers {
 				paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-				opts, err := ParseOptions([]string{"-self=" + addr, "-remotes=" + strings.Join(peers, ","), "-fault=" + mode,
+				opts, err := ParseOptions([]string{"-plaintext", "-self=" + addr, "-remotes=" + strings.Join(peers, ","), "-fault=" + mode,
 					"-output=" + paths[i], "-time=100ms", "-payload=256", "-rate=50"}, io.Discard)
 				if err != nil {
 					t.Fatal(err)
@@ -160,7 +160,7 @@ func TestFaultModesWriteOnlyCorrectOriginReports(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := fmt.Sprintf("node %d f=1 fail-fast=true fault=%s fault-node=4 kill-after=0s", i+1, mode)
+				want := fmt.Sprintf("node %d f=1 auth=none fail-fast=true fault=%s fault-node=4 kill-after=0s", i+1, mode)
 				if report.GetLabel() != want {
 					t.Fatalf("scenario not recorded: %s", report.GetLabel())
 				}
@@ -173,7 +173,7 @@ func TestFaultModesWriteOnlyCorrectOriginReports(t *testing.T) {
 }
 
 func TestFaultOptionValidation(t *testing.T) {
-	base := []string{"-self=127.0.0.1:9001", "-remotes=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003,127.0.0.1:9004", "-output=unused", "-time=2s"}
+	base := []string{"-plaintext", "-self=127.0.0.1:9001", "-remotes=127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003,127.0.0.1:9004", "-output=unused", "-time=2s"}
 	for _, flag := range []string{"-fault=silent", "-fault=wrong-echo", "-fault=equivocate", "-fault-kill-after=1s"} {
 		opts, err := ParseOptions(append(append([]string{}, base...), flag), io.Discard)
 		if err != nil || !opts.failFast || opts.f != 1 || opts.faultNode != 4 {

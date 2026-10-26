@@ -43,7 +43,7 @@ func TestBenchmarkCrashFlag(t *testing.T) {
 	done := make(chan error, 4)
 	for i, addr := range peers {
 		path := filepath.Join(tmp, fmt.Sprintf("node%d.binpb", i+1))
-		cmd := exec.CommandContext(ctx, binary, "-mode=bench", "-self="+addr, "-remotes="+strings.Join(peers, ","), "-output="+path,
+		cmd := exec.CommandContext(ctx, binary, "-mode=bench", "-plaintext", "-self="+addr, "-remotes="+strings.Join(peers, ","), "-output="+path,
 			"-time=600ms", "-rate=20", "-payload=256", "-fault-kill-after=200ms", "-fault-node=4")
 		logfile, err := os.Create(filepath.Join(tmp, fmt.Sprintf("node%d.log", i+1)))
 		if err != nil {
