@@ -23,13 +23,18 @@ const CAKeyFile = "ca-key.pem"
 // Generate creates a project CA and one credential directory per replica,
 // node-<id>, for the ordered addresses. Each directory holds only that
 // replica's key and certificate plus the public CA certificate, ready to copy
-// to that host. Certificates are valid for the given duration.
+// to that host. Certificates are valid for the given duration. out must not
+// exist yet: Generate creates it with mode 0700 and never writes into an
+// existing directory, whose permissions it cannot vouch for.
 func Generate(out string, addrs []string, validity time.Duration) error {
 	if len(addrs) == 0 {
 		return fmt.Errorf("peertls: no addresses")
 	}
-	if err := os.MkdirAll(out, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
 		return err
+	}
+	if err := os.Mkdir(out, 0o700); err != nil {
+		return fmt.Errorf("peertls: create new output directory: %w", err)
 	}
 	now := time.Now()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -86,7 +91,7 @@ func Generate(out string, addrs []string, validity time.Duration) error {
 			return err
 		}
 		dir := filepath.Join(out, "node-"+strconv.FormatUint(uint64(id), 10))
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.Mkdir(dir, 0o700); err != nil {
 			return err
 		}
 		if err := writePEM(filepath.Join(dir, CAFile), "CERTIFICATE", caDER, 0o644); err != nil {

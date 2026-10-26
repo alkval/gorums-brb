@@ -42,36 +42,50 @@ func TestBenchmarkRequiresOneTransport(t *testing.T) {
 	}
 }
 
+// Both variants run over authenticated TLS, including the optimistic
+// variant's committee subsets and Q-ECHO phase.
 func TestAuthenticatedBenchmarkProducesReports(t *testing.T) {
-	peers := addresses(t, 4)
-	creds := benchCreds(t, peers)
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
-	done := make(chan error, 4)
-	paths := make([]string, 4)
-	for i, peer := range peers {
-		paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-		opts, err := ParseOptions([]string{"-tls-dir=" + nodeCreds(creds, i+1), "-self=" + peer,
-			"-remotes=" + strings.Join(peers, ","), "-f=1", "-output=" + paths[i], "-time=200ms", "-payload=256"}, io.Discard)
-		if err != nil {
-			t.Fatal(err)
-		}
-		go func() { done <- Run(ctx, opts) }()
-	}
-	for range 4 {
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-	}
-	for i, path := range paths {
-		checkReport(t, path, 4, 1, 256)
-		report, err := benchkit.LoadReport(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if want := "node " + strconv.Itoa(i+1) + " f=1 auth=tls"; report.GetLabel() != want {
-			t.Fatalf("label %q, want %q", report.GetLabel(), want)
-		}
+	for _, optimistic := range []bool{false, true} {
+		t.Run(map[bool]string{false: "bracha", true: "optimistic"}[optimistic], func(t *testing.T) {
+			peers := addresses(t, 4)
+			creds := benchCreds(t, peers)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			done := make(chan error, 4)
+			paths := make([]string, 4)
+			for i, peer := range peers {
+				paths[i] = filepath.Join(t.TempDir(), "result.binpb")
+				args := []string{"-tls-dir=" + nodeCreds(creds, i+1), "-self=" + peer,
+					"-remotes=" + strings.Join(peers, ","), "-f=1", "-output=" + paths[i], "-time=200ms", "-payload=256"}
+				if optimistic {
+					args = append(args, "-optimistic", "-benchmarks=OptimisticLocalDelivery")
+				}
+				opts, err := ParseOptions(args, io.Discard)
+				if err != nil {
+					t.Fatal(err)
+				}
+				go func() { done <- Run(ctx, opts) }()
+			}
+			for range 4 {
+				if err := <-done; err != nil {
+					t.Fatal(err)
+				}
+			}
+			name, suffix := benchmarkName, ""
+			if optimistic {
+				name, suffix = "OptimisticLocalDelivery", " optimistic=true"
+			}
+			for i, path := range paths {
+				checkReport(t, path, 4, 1, 256, name)
+				report, err := benchkit.LoadReport(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := "node " + strconv.Itoa(i+1) + " f=1 auth=tls" + suffix; report.GetLabel() != want {
+					t.Fatalf("label %q, want %q", report.GetLabel(), want)
+				}
+			}
+		})
 	}
 }
 
