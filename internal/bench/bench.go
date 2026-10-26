@@ -20,6 +20,8 @@ import (
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchkit"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 const benchmarkName = "BrachaLocalDelivery"
@@ -226,18 +228,7 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 	ready := make(chan struct{})
 	server := gorums.NewServer(append(serverOpts, gorums.WithPeers(opts.selfID, nodes,
 		gorums.WithGRPCDialOptions(creds, grpc.WithDefaultCallOptions(grpc.WaitForReady(!opts.failFast))),
-	), gorums.WithServerInterceptors(func(sc gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
-		if strings.HasPrefix(msg.GetMethod(), "brb.v1.Bracha.") {
-			// Startup probes must still run while early BRB messages wait.
-			sc.Release()
-			select {
-			case <-ready:
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-		return next(sc, msg)
-	}))...)
+	), gorums.WithServerInterceptors(serverInterceptor(ctx, ready, len(opts.Remotes))))...)
 	control := benchkit.NewControl()
 	done := control.ArmDone(len(opts.Remotes))
 	probed := make(chan struct{})
@@ -260,6 +251,30 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 	go func() { serveErr <- server.Serve(listener) }()
 	benchkit.Logf("brb bench: node %d listening on %s\n", opts.selfID, listener.Addr())
 	return &benchmarkNode{server, replica, control, done, ready, probed, serveErr}, nil
+}
+
+// serverInterceptor admits benchmark control calls only from group members and
+// holds BRB messages until this replica has finished its startup checks. The
+// replica itself rejects BRB votes from non-members.
+func serverInterceptor(ctx context.Context, ready <-chan struct{}, n int) gorums.ServerInterceptor {
+	return func(sc gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
+		method := msg.GetMethod()
+		if strings.HasPrefix(method, "benchkit.Control.") {
+			if id := sc.SenderID(); id == 0 || int(id) > n {
+				return nil, status.Errorf(codes.PermissionDenied, "brb bench: %s from non-member %d", method, id)
+			}
+		}
+		if strings.HasPrefix(method, "brb.v1.Bracha.") {
+			// Startup probes must still run while early BRB messages wait.
+			sc.Release()
+			select {
+			case <-ready:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return next(sc, msg)
+	}
 }
 
 func startupTimeout(n int) time.Duration { return 30*time.Second + time.Duration(n)*time.Second }
@@ -386,6 +401,12 @@ func waitGrace(ctx context.Context, duration time.Duration) error {
 type readyControl struct {
 	*benchkit.Control
 	probed <-chan struct{}
+}
+
+// Done counts completion for the replica that sent it. benchkit's Control.Done
+// trusts the request's sender field, so the verified stream ID replaces it.
+func (c readyControl) Done(ctx gorums.ServerContext, _ *benchkit.DoneRequest) {
+	c.Control.Done(ctx, benchkit.DoneRequest_builder{SenderId: ctx.SenderID()}.Build())
 }
 
 func (c readyControl) Start(ctx gorums.ServerContext, _ *benchkit.StartRequest) (*benchkit.StartResponse, error) {
