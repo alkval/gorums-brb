@@ -69,6 +69,32 @@ the prefix to the highest observed sequence would lose earlier deliveries.
 Sequence counters and prefixes are not persisted, so individual process
 recovery is outside the model. The whole group restarts between runs.
 
+## READY digests
+
+The optional `-ready-digest` variant keeps the full value in PROPOSE and ECHO
+and sends only its SHA-256 digest in READY, which removes most repeated value
+transmission. Receivers compute the digest of every value they accept and count
+ECHO and READY votes per digest. A replica delivers once a digest has more than
+2f READYs and it holds a value with that digest, received in the origin's
+PROPOSE or in some sender's first ECHO. If the READYs arrive first, the instance
+waits and delivers when the matching value arrives, at most once. Repeated
+messages from a sender are dropped before hashing, so each instance stores at
+most n+1 values.
+
+Safety now also assumes that SHA-256 is collision resistant. No separate value
+retrieval is needed under the model: the first correct READY for a digest
+follows an ECHO quorum for it, which contains at least f+1 correct replicas
+that sent ECHO with the full value to everyone. In the bounded prototype this
+also requires that those messages are accepted within the receive window.
+
+If every matching PROPOSE and ECHO to a replica is permanently lost, outside
+the reliable-link assumption, the replica keeps a READY quorum without the value
+and does not deliver. Safety is kept, but delivery and totality can fail, and
+the pending instance holds back that origin's delivered prefix. With full-value
+READY such a replica could still deliver from the READYs. Sending only digests
+in ECHO as well would require a separate payload-availability and retrieval
+design and is not implemented.
+
 ## Optimistic comparison
 
 The optional variant adds Q-ECHO and sends intermediate phases through rotating

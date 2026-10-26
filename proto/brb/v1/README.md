@@ -2,7 +2,9 @@
 
 `brb.proto` defines `Bracha.Propose`, `Bracha.Echo` and `Bracha.Ready`.
 `Bracha.QEcho` is used only by the experimental optimistic variant. The message
-marks the selected variant, and receivers reject mismatched variants.
+names its `Variant`, and receivers reject every other variant. In the
+READY-digest variant, READY carries a 32-byte SHA-256 `digest` and no value;
+all other messages carry a value and no digest.
 Each is a Gorums one-way multicast. The generated `.Send()` method waits for
 sends, not application delivery.
 

@@ -23,7 +23,7 @@ Stop all replicas with Ctrl+C before repeating. The demo uses `-broadcast` and
 `-count`. Payload sizes and paced workloads belong to benchmark mode.
 
 For the experimental optimistic variant, add `-optimistic` to **every** node's
-command. Keep the same membership and f on all nodes and restart the whole group
+command. For READY digests, add `-ready-digest` to every node instead. Keep the same membership and f on all nodes and restart the whole group
 when changing variants. It uses rotating committees and has no recovery.
 Selected faulty members can stall delivery. See [protocol details](../../internal/brb/OPTIMISTIC.md).
 
@@ -152,8 +152,11 @@ not an independent failure-rate measurement. Check expected reports, manifests
 and logs, including receive-window errors and send-failure counters.
 
 To compare the optimistic variant, select `-benchmarks OptimisticLocalDelivery`
-and add `-optimistic` to the extra arguments. Keep all other workload settings
-identical. Fault injection flags are rejected for optimistic benchmarks.
+and add `-optimistic` to the extra arguments. For READY digests, select
+`-benchmarks BrachaDigestLocalDelivery` and add `-ready-digest`. Keep all other
+workload settings identical. Fault injection flags are rejected for optimistic
+benchmarks but allowed with READY digests. The traffic lines show the smaller
+READY messages directly.
 Use `-stats-mode hdr` for long runs. No separate warm-up phase is implemented.
 Capture `make provenance BINARY=bin/brb-linux-amd64` beside each sweep manifest.
 It prints the checkout state, binary build information and SHA-256.

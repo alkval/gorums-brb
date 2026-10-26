@@ -30,6 +30,11 @@ Delivery is once per instance and need not follow sequence order.
 See the [protocol and system model](docs/Protocol.md) for the threshold reasoning,
 properties and implementation limits.
 
+The optional `-ready-digest` variant sends a SHA-256 digest instead of the
+value in READY. It adds a collision-resistance assumption and, if all messages
+carrying a value to a replica are lost, can leave that replica unable to
+deliver; see the [protocol and system model](docs/Protocol.md#ready-digests).
+
 The optional `-optimistic` variant follows OptiBRB's four-phase optimistic path
 with rotating committees. It has no recovery or reputation system. It is intended
 for fault-free performance comparisons and does not provide BRB liveness or

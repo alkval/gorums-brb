@@ -2,7 +2,8 @@
 
 This experiment follows Algorithm 1 in Dan-Cristian Ciacu's *OptiBRB:
 Optimistic and Adaptive Byzantine Reliable Broadcast* (TU Delft, 2026).
-It keeps full payloads in every message. Hashing is a separate experiment.
+It keeps full payloads in every message. Hashing is the separate `-ready-digest`
+variant of Bracha, described in the [protocol model](../../docs/Protocol.md#ready-digests).
 
 For each instance, Q = floor((n+f)/2)+1. PROPOSE goes to all replicas, as in
 Algorithm 1. Only Q selected replicas ECHO, each to f+1 selected replicas.
