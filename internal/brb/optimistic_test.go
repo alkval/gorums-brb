@@ -342,9 +342,11 @@ func TestRejectMismatchedVariant(t *testing.T) {
 	// Every variant, plus a value unknown to this version.
 	variants := []brbv1.Variant{brbv1.Variant_VARIANT_BRACHA, brbv1.Variant_VARIANT_OPTIMISTIC,
 		brbv1.Variant_VARIANT_BRACHA_READY_DIGEST, brbv1.Variant(7)}
-	for _, optimistic := range []bool{false, true} {
-		m := optimisticMachine(t, 4, 1, 1)
-		m.optimistic = optimistic
+	digest, err := NewReadyDigestStateMachine(4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []*StateMachine{newTestMachine(t), optimisticMachine(t, 4, 1, 1), digest} {
 		node := &Replica{self: 1, machine: m, ctx: t.Context()}
 		msg := phaseMessage(BroadcastID{1, 1}, []byte("v"))
 		for _, v := range variants {
