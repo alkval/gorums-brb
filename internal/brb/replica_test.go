@@ -455,9 +455,17 @@ func TestGorumsTrafficAfterDelivery(t *testing.T) {
 	if got := nodes[0].Traffic(PhasePropose); got != perCall {
 		t.Fatalf("origin PROPOSE traffic = %+v, want %+v", got, perCall)
 	}
+	// Every replica sends one READY, but it can deliver from the others' READYs
+	// before its own reaches accounting. Wait for each READY call, then freeze
+	// the counters. An ECHO may still be skipped if the replica delivered before
+	// its PROPOSE arrived.
 	for i, node := range nodes {
-		// READY is counted before the delivery it enables. An ECHO may still be
-		// in progress, or skipped if the replica delivered before PROPOSE arrived.
+		if !waitFor(t, 5*time.Second, func() bool { return node.Traffic(PhaseReady).Calls == 1 }) {
+			t.Fatalf("node %d never recorded its READY", i+1)
+		}
+		node.FinalizeTraffic()
+	}
+	for i, node := range nodes {
 		if got := node.Traffic(PhaseReady); got != perCall {
 			t.Fatalf("node %d READY traffic = %+v, want %+v", i+1, got, perCall)
 		}
