@@ -40,13 +40,13 @@ phase messages or deliveries at every replica. State this endpoint in captions.
 make bench-linux
 ```
 
-Build sweep in a separate Gorums checkout at the revision pinned in `go.mod`
-(currently `00c1b1d48897c233c8bc68de9acccc0c482e38e6`):
+Build sweep in a separate Gorums checkout at the release pinned in `go.mod`
+(currently `v0.12.0`):
 
 ```sh
 git clone --no-checkout https://github.com/relab/gorums.git /path/to/gorums-sweep
 cd /path/to/gorums-sweep
-git checkout --detach 00c1b1d48897c233c8bc68de9acccc0c482e38e6
+git checkout --detach v0.12.0
 make sweep
 cd benchkit
 ```

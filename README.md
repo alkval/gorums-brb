@@ -5,7 +5,7 @@ capstone project. The report is maintained separately in Overleaf.
 
 ## Build and check
 
-Go 1.27.2 or newer is selected through `go.mod`.
+Go 1.27.3 or newer is selected through `go.mod`, as required by Gorums v0.12.0.
 
 ```sh
 make build
