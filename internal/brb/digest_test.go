@@ -2,10 +2,18 @@ package brb
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"testing"
+	"time"
+
+	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
+	"github.com/relab/gorums"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/proto"
 )
 
 func digestMachine(t *testing.T, n, f int) *StateMachine {
@@ -382,6 +390,86 @@ func TestDigestSimulations(t *testing.T) {
 			if v != "A" {
 				t.Fatalf("delivered %q", v)
 			}
+		}
+	}
+}
+
+func TestReadyDigestMessageFields(t *testing.T) {
+	id := BroadcastID{1, 1}
+	msg := func(variant brbv1.Variant, value, digest []byte) *brbv1.PhaseMessage {
+		m := phaseMessage(id, value)
+		m.SetVariant(variant)
+		m.SetDigest(digest)
+		return m
+	}
+	digestVariant := brbv1.Variant_VARIANT_BRACHA_READY_DIGEST
+	for name, tc := range map[string]struct {
+		machine *StateMachine
+		phase   Phase
+		msg     *brbv1.PhaseMessage
+	}{
+		"value in a digest READY":   {digestMachine(t, 4, 1), PhaseReady, msg(digestVariant, []byte("v"), sum("v"))},
+		"short READY digest":        {digestMachine(t, 4, 1), PhaseReady, msg(digestVariant, nil, sum("v")[:31])},
+		"digest in PROPOSE":         {digestMachine(t, 4, 1), PhasePropose, msg(digestVariant, []byte("v"), sum("v"))},
+		"digest in ECHO":            {digestMachine(t, 4, 1), PhaseEcho, msg(digestVariant, []byte("v"), sum("v"))},
+		"digest in a Bracha ECHO":   {newTestMachine(t), PhaseEcho, msg(brbv1.Variant_VARIANT_BRACHA, []byte("v"), sum("v"))},
+		"digest in a Bracha READY":  {newTestMachine(t), PhaseReady, msg(brbv1.Variant_VARIANT_BRACHA, []byte("v"), sum("v"))},
+		"value-only READY (digest)": {digestMachine(t, 4, 1), PhaseReady, msg(digestVariant, []byte("v"), nil)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// Sent by the origin, so a PROPOSE is not ignored for its sender.
+			node := &Replica{self: 1, machine: tc.machine, ctx: t.Context()}
+			node.handleFrom(1, tc.phase, tc.msg)
+			if len(tc.machine.instances) != 0 {
+				t.Fatal("malformed message allocated state")
+			}
+		})
+	}
+	// A well-formed digest READY is accepted and counted under the sender.
+	m := digestMachine(t, 4, 1)
+	node := &Replica{self: 1, machine: m, ctx: t.Context()}
+	node.handleFrom(2, PhaseReady, msg(digestVariant, nil, sum("v")))
+	if s := m.instances[id]; s == nil || s.readies.counts[string(sum("v"))] != 1 {
+		t.Fatal("valid digest READY was not counted")
+	}
+}
+
+func TestGorumsReadyDigestDelivery(t *testing.T) {
+	systems, stop, err := gorums.NewLocalServers(4, gorums.WithLocalDialOptions(gorums.WithGRPCDialOptions(
+		grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stop)
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	t.Cleanup(cancel)
+	nodes := make([]*Replica, 4)
+	deliveries := make([]chan Delivery, 4)
+	for i, sys := range systems {
+		deliveries[i] = make(chan Delivery, 10)
+		if nodes[i], err = NewReadyDigestReplica(ctx, sys, 1, func(d Delivery) { deliveries[i] <- d }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	serve(t, systems)
+	value := bytes.Repeat([]byte("x"), 4096)
+	id := BroadcastID{1, 1}
+	if err := nodes[0].Broadcast(1, value); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range deliveries {
+		awaitDelivery(t, ch, id, string(value))
+	}
+	// Every replica counted its READY before delivering. Each READY carries
+	// only the digest, so its size does not depend on the 4 KiB value.
+	readySize := uint64(proto.Size(nodes[0].readyDigestMessage(id, sum(string(value)))))
+	if readySize >= 64 {
+		t.Fatalf("digest READY is %d bytes", readySize)
+	}
+	for i, node := range nodes {
+		got := node.Traffic(PhaseReady)
+		if got.Calls != 1 || got.RemoteMessages != 3 || got.RemoteBytes != 3*readySize {
+			t.Fatalf("node %d READY traffic %+v, want 3 remote messages of %d bytes", i+1, got, readySize)
 		}
 	}
 }

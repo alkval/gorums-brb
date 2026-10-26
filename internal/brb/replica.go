@@ -55,16 +55,22 @@ type Replica struct {
 // throughout the run, then cancel it before server.Stop. The caller owns both.
 // onDeliver must be quick and safe for concurrent calls.
 func NewReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*Replica, error) {
-	return newReplica(ctx, server, f, onDeliver, false)
+	return newReplica(ctx, server, f, onDeliver, brbv1.Variant_VARIANT_BRACHA)
 }
 
 // NewOptimisticReplica uses rotating committees with no fallback or recovery.
 // All members must select this variant, and faulty committee members may stall it.
 func NewOptimisticReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*Replica, error) {
-	return newReplica(ctx, server, f, onDeliver, true)
+	return newReplica(ctx, server, f, onDeliver, brbv1.Variant_VARIANT_OPTIMISTIC)
 }
 
-func newReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery), optimistic bool) (*Replica, error) {
+// NewReadyDigestReplica runs Bracha with a SHA-256 digest instead of the value
+// in READY. All members must select this variant.
+func NewReadyDigestReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery)) (*Replica, error) {
+	return newReplica(ctx, server, f, onDeliver, brbv1.Variant_VARIANT_BRACHA_READY_DIGEST)
+}
+
+func newReplica(ctx context.Context, server *gorums.Server, f int, onDeliver func(Delivery), variant brbv1.Variant) (*Replica, error) {
 	if ctx == nil || server == nil {
 		return nil, errors.New("brb: nil run context or Gorums server")
 	}
@@ -82,11 +88,14 @@ func newReplica(ctx context.Context, server *gorums.Server, f int, onDeliver fun
 	if self == 0 || uint64(self) > uint64(len(config)) {
 		return nil, errors.New("brb: server identity is outside configuration")
 	}
-	if optimistic {
+	switch variant {
+	case brbv1.Variant_VARIANT_OPTIMISTIC:
 		machine, err = NewOptimisticStateMachine(len(config), f, self)
-		if err != nil {
-			return nil, err
-		}
+	case brbv1.Variant_VARIANT_BRACHA_READY_DIGEST:
+		machine, err = NewReadyDigestStateMachine(len(config), f)
+	}
+	if err != nil {
+		return nil, err
 	}
 	node := &Replica{
 		self: self, machine: machine, config: config, ctx: ctx,
@@ -193,10 +202,21 @@ func (n *Replica) message(id BroadcastID, value []byte) *brbv1.PhaseMessage {
 // variant names this replica's protocol on the wire. Replicas reject messages
 // from any other variant, including values unknown to this version.
 func (n *Replica) variant() brbv1.Variant {
-	if n.machine.optimistic {
+	switch {
+	case n.machine.optimistic:
 		return brbv1.Variant_VARIANT_OPTIMISTIC
+	case n.machine.readyDigest:
+		return brbv1.Variant_VARIANT_BRACHA_READY_DIGEST
 	}
 	return brbv1.Variant_VARIANT_BRACHA
+}
+
+// readyDigestMessage builds a READY that carries only the value's digest.
+func (n *Replica) readyDigestMessage(id BroadcastID, digest []byte) *brbv1.PhaseMessage {
+	msg := phaseMessage(id, nil)
+	msg.SetVariant(n.variant())
+	msg.SetDigest(append([]byte(nil), digest...))
+	return msg
 }
 
 // Subsets reuse the existing Gorums connections. PROPOSE and READY reach all.
@@ -275,8 +295,20 @@ func (n *Replica) handleFrom(sender ProcessID, phase Phase, msg *brbv1.PhaseMess
 		log.Printf("brb node %d: rejected mismatched protocol variant", n.self)
 		return
 	}
+	// Only READY in the READY-digest variant carries a digest, and then no value.
+	digestREADY := n.machine.readyDigest && phase == PhaseReady
+	if digestREADY && len(msg.GetValue()) != 0 || !digestREADY && len(msg.GetDigest()) != 0 {
+		log.Printf("brb node %d: rejected malformed %v message", n.self, phase)
+		return
+	}
 	id := BroadcastID{Origin: ProcessID(msg.GetId().GetOrigin()), Sequence: msg.GetId().GetSequence()}
-	actions, err := n.machine.Handle(sender, phase, id, msg.GetValue())
+	var actions []Action
+	var err error
+	if digestREADY {
+		actions, err = n.machine.HandleReadyDigest(sender, id, msg.GetDigest())
+	} else {
+		actions, err = n.machine.Handle(sender, phase, id, msg.GetValue())
+	}
 	if err != nil {
 		if errors.Is(err, ErrOutsideWindow) {
 			n.windowExceeded.Store(true)
@@ -294,7 +326,11 @@ func (n *Replica) performActions(actions []Action) {
 		case ActionMulticastEcho:
 			err = n.multicast(PhaseEcho, n.recipients(action), n.message(action.ID, action.Value), brbv1.Echo)
 		case ActionMulticastReady:
-			err = n.multicast(PhaseReady, n.config, n.message(action.ID, action.Value), brbv1.Ready)
+			msg := n.message(action.ID, action.Value)
+			if action.Digest != nil {
+				msg = n.readyDigestMessage(action.ID, action.Digest)
+			}
+			err = n.multicast(PhaseReady, n.config, msg, brbv1.Ready)
 		case ActionMulticastQEcho:
 			err = n.multicast(PhaseQEcho, n.recipients(action), n.message(action.ID, action.Value), brbv1.QEcho)
 		case ActionDeliver:
