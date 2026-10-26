@@ -35,9 +35,13 @@ with rotating committees. It has no recovery or reputation system. It is intende
 for fault-free performance comparisons and does not provide BRB liveness or
 totality under arbitrary Byzantine faults. See [the variant description](internal/brb/OPTIMISTIC.md).
 
-Sender IDs are trusted. The controlled faults keep their own identities.
-Cryptographic peer verification awaits [Gorums #359](https://github.com/relab/gorums/pull/359).
-Failed sends to correct peers are not repaired.
+Votes are counted under the peer ID that Gorums verifies against each replica's
+TLS certificate, so a replica cannot vote under another ID. Benchmarks require
+`-tls-dir` with that replica's credentials, or an explicit `-plaintext` for a
+labelled comparison. `bin/brb -mode=certs` generates a project CA and per-replica
+credentials; see [command usage](cmd/brb/README.md#authentication). The security
+argument assumes that private keys are not compromised. Failed sends to correct
+peers are not repaired.
 
 Each origin has a 1024-sequence receive window and a contiguous delivered prefix.
 Old messages are ignored. Messages beyond the window are rejected without storing

@@ -27,6 +27,49 @@ command. Keep the same membership and f on all nodes and restart the whole group
 when changing variants. It uses rotating committees and has no recovery.
 Selected faulty members can stall delivery. See [protocol details](../../internal/brb/OPTIMISTIC.md).
 
+Without `-tls-dir` the demo runs plaintext and logs that sender IDs are not
+verified. To authenticate it, give each node its own credential directory as
+described below, for example `-tls-dir creds/node-2` for ID 2.
+
+## Authentication
+
+Votes are counted under the peer ID that Gorums reports for each stream. With
+`-tls-dir`, peers carry TLS identities (`spiffe://gorums-brb/node/<id>`) and
+Gorums checks each peer stream against the replica's certificate in both
+directions before any handler runs. Clients without a certificate are refused,
+and benchmark control calls from non-members are rejected. Errors in the
+credential files stop the process before it listens. There is no fallback to
+plaintext.
+
+Generate a project CA and one directory per replica on the provisioning
+machine, outside the repository. List the addresses in node-ID order, exactly
+as the replicas receive them in `-peers` or `-remotes`. Certificates name each
+address's IP, so the hosts must be reachable at those IPs:
+
+```sh
+bin/brb -mode=certs -out /path/to/brb-creds -peers "$addresses" -validity 720h
+```
+
+This writes `ca.pem` and `ca-key.pem` to the output root and `node-<id>/` with
+`ca.pem`, `node.pem` and `node-key.pem` for each replica.
+
+- Keep `ca-key.pem` on the provisioning machine. Never copy it to a replica.
+- Copy only `node-<id>/` to replica `<id>`, for example with `scp` or `rsync`
+  over SSH, into a private directory on a local, non-shared disk, for example
+  `/path/to/brb-node` holding that replica's three files. Use the same absolute
+  path on every host, with mode 0700 for the directory and 0600 for the key. A
+  replica refuses a key that group or others can read.
+- Pass only that path, `-tls-dir=/path/to/brb-node`. Never put keys in
+  arguments, logs, results or Git.
+- Remove the directories from every host after the experiments.
+
+These measures assume that private keys stay with their replicas. TLS does not
+protect against a stolen key or a compromised account that can read one.
+
+Benchmarks require exactly one of `-tls-dir` and `-plaintext`. Plaintext runs
+are only for a labelled comparison of transport cost. Report labels record
+`auth=tls` or `auth=none`.
+
 ## Benchmark and sweep
 
 Each worker originates broadcasts and waits for local delivery. Latency ends at
@@ -63,7 +106,7 @@ settings. For a four-host diagnostic, run preflight, the workload, then postflig
 ./cmd/sweep/sweep -hosts 'compute[1-4]' \
   -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 \
   -benchmarks BrachaLocalDelivery -n 4 -workers 1 -payload 256 \
-  -duration 10s -reps 1 -rate 0 -extra-args '-mode=bench' \
+  -duration 10s -reps 1 -rate 0 -extra-args '-mode=bench -tls-dir=/path/to/brb-node' \
   -port 9000 -remote-dir /tmp -fd-limit 0 \
   -outdir /path/to/gorums-brb/experiments/out -sweep brb-diagnostic
 ./cmd/sweep/sweep -check -hosts 'compute[1-4]' \
@@ -79,7 +122,7 @@ approved pool of thirteen machines, preflight that pool and run:
 ./cmd/sweep/sweep -hosts 'compute[1-13]' \
   -config /path/to/private-ssh-config -binary /path/to/brb-linux-amd64 \
   -benchmarks BrachaLocalDelivery -n 4,7,10,13 -workers 1,2 -payload 256 \
-  -duration 10s -reps 3 -rate 0 -extra-args '-mode=bench' -verbose -trim 1s \
+  -duration 10s -reps 3 -rate 0 -extra-args '-mode=bench -tls-dir=/path/to/brb-node' -verbose -trim 1s \
   -port 9000 -remote-dir /tmp -fd-limit 0 \
   -outdir /path/to/gorums-brb/experiments/out -sweep brb-membership
 ./cmd/sweep/sweep -check -hosts 'compute[1-13]' \
@@ -88,7 +131,8 @@ approved pool of thirteen machines, preflight that pool and run:
 
 Omitting `-f` selects `(n-1)/3`: these groups use f=1, 2, 3 and 4. A fixed
 `-f=1` in extra arguments would override that for every group. This baseline
-matrix completed on 15 October 2026 using source `b2a85c3`, with 24 trials and
+matrix completed on 15 October 2026 using source `b2a85c3`, before peer
+authentication, with plaintext and trusted sender IDs. It had 24 trials and
 all 204 expected node reports. One trial recorded a host-wide TCP counter change.
 This checks the tested configurations, not arbitrary faults or all-replica
 delivery for every broadcast. The `compute` aliases above are placeholders,
@@ -108,7 +152,7 @@ not an independent failure-rate measurement. Check expected reports, manifests
 and logs, including receive-window errors and send-failure counters.
 
 To compare the optimistic variant, select `-benchmarks OptimisticLocalDelivery`
-and use `-extra-args '-mode=bench -optimistic'`. Keep all other workload settings
+and add `-optimistic` to the extra arguments. Keep all other workload settings
 identical. Fault injection flags are rejected for optimistic benchmarks.
 Use `-stats-mode hdr` for long runs. No separate warm-up phase is implemented.
 Capture `make provenance BINARY=bin/brb-linux-amd64` beside each sweep manifest.
@@ -144,8 +188,9 @@ If startup fails, check addresses, ports and that every member is running.
 Any replica that observes a sequence-window violation rejects its benchmark
 result and writes no report. Investigate gaps or lag and discard that run,
 including reports collected from other replicas.
-Logical identities are trusted, and failed BRB sends to correct peers are not
-repaired. See the root README for the receive-window assumptions.
+A faulty replica acts under its own authenticated identity. Failed BRB sends to
+correct peers are not repaired. See the root README for the receive-window
+assumptions.
 
 Each replica logs the first ECHO and READY multicast failure with error details.
 Further failures are counted, with totals printed at normal shutdown. Each count

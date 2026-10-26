@@ -23,8 +23,8 @@ The state machine filters votes by committee membership before allocating state.
 The adapter uses subsets of the existing Gorums peer configuration, reusing the
 connections. Messages mark their variant, so Bracha and optimistic replicas
 reject each other's messages. Restart the entire group when switching variants.
-The existing trusted-identity, reliable-channel and sequence-window restrictions
-still apply. No new identity protection or retransmission is introduced.
+Peer authentication, the reliable-channel assumption and the sequence-window
+restrictions are the same as for Bracha. The variant adds no retransmission.
 
 ## Guarantees and limits
 
