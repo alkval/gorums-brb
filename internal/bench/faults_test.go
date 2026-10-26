@@ -54,124 +54,154 @@ func (r observingReplica) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage
 	r.Replica.Echo(ctx, msg)
 }
 
+// Each fault runs against ordinary Bracha and the READY-digest variant. The
+// faulty replica's messages carry the run's variant.
 func TestNetworkFaultScenarios(t *testing.T) {
-	for _, mode := range []string{"silent", "wrong-echo", "equivocate"} {
-		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			systems, stop, err := gorums.NewLocalServers(4, gorums.WithLocalDialOptions(
-				gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()),
-					grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() { cancel(); stop() }()
-			nodes := make([]*brb.Replica, 4)
-			observed := make(chan observedFault, 16)
-			deliveries := make([]chan brb.Delivery, 4)
-			for i, server := range systems {
-				deliveries[i] = make(chan brb.Delivery, 4)
-				nodes[i], err = brb.NewReplica(ctx, server, 1, func(d brb.Delivery) { deliveries[i] <- d })
-				if err != nil {
-					t.Fatal(err)
+	variants := map[string]struct {
+		variant    brbv1.Variant
+		newReplica func(context.Context, *gorums.Server, int, func(brb.Delivery)) (*brb.Replica, error)
+	}{
+		"bracha":       {brbv1.Variant_VARIANT_BRACHA, brb.NewReplica},
+		"ready-digest": {brbv1.Variant_VARIANT_BRACHA_READY_DIGEST, brb.NewReadyDigestReplica},
+	}
+	for name, v := range variants {
+		for _, mode := range []string{"silent", "wrong-echo", "equivocate"} {
+			t.Run(name+"/"+mode, func(t *testing.T) {
+				testNetworkFault(t, mode, v.variant, v.newReplica)
+			})
+		}
+	}
+}
+
+func testNetworkFault(t *testing.T, mode string, variant brbv1.Variant,
+	newReplica func(context.Context, *gorums.Server, int, func(brb.Delivery)) (*brb.Replica, error)) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	systems, stop, err := gorums.NewLocalServers(4, gorums.WithLocalDialOptions(
+		gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cancel(); stop() }()
+	nodes := make([]*brb.Replica, 4)
+	observed := make(chan observedFault, 16)
+	deliveries := make([]chan brb.Delivery, 4)
+	for i, server := range systems {
+		deliveries[i] = make(chan brb.Delivery, 4)
+		nodes[i], err = newReplica(ctx, server, 1, func(d brb.Delivery) { deliveries[i] <- d })
+		if err != nil {
+			t.Fatal(err)
+		}
+		brbv1.RegisterBrachaServer(server, observingReplica{nodes[i], uint32(i + 1), observed})
+	}
+	registerFault(ctx, systems[3], mode, variant)
+	for _, server := range systems {
+		go func() { _ = server.ListenAndServe() }()
+	}
+	for _, server := range systems {
+		if err := server.WaitForPeers(ctx, func(c gorums.Config) bool { return len(c) == 4 }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	origin, value := brb.ProcessID(1), "hello"
+	if mode == "equivocate" {
+		origin, value = 4, "A"
+		if err := equivocate(ctx, systems[3], variant); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := nodes[0].Broadcast(1, []byte(value)); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "silent" {
+		phase := "echo"
+		want := map[uint32]string{1: "iello", 2: "iello", 3: "iello"}
+		if mode == "equivocate" {
+			phase = "propose"
+			want = map[uint32]string{1: "A", 2: "B", 3: "A"}
+		}
+		for len(want) > 0 {
+			select {
+			case event := <-observed:
+				if event.phase != phase {
+					continue
 				}
-				brbv1.RegisterBrachaServer(server, observingReplica{nodes[i], uint32(i + 1), observed})
-			}
-			registerFault(ctx, systems[3], mode)
-			for _, server := range systems {
-				go func() { _ = server.ListenAndServe() }()
-			}
-			for _, server := range systems {
-				if err := server.WaitForPeers(ctx, func(c gorums.Config) bool { return len(c) == 4 }); err != nil {
-					t.Fatal(err)
+				expected, ok := want[event.receiver]
+				if !ok || event.value != expected || event.id != (brb.BroadcastID{Origin: origin, Sequence: 1}) {
+					t.Fatalf("unexpected faulty message: %+v, remaining expectations: %v", event, want)
 				}
+				delete(want, event.receiver)
+			case <-ctx.Done():
+				t.Fatalf("%s fault was not observed at replicas %v", mode, want)
 			}
-			origin, value := brb.ProcessID(1), "hello"
-			if mode == "equivocate" {
-				origin, value = 4, "A"
-				if err := equivocate(ctx, systems[3]); err != nil {
-					t.Fatal(err)
-				}
-			} else if err := nodes[0].Broadcast(1, []byte(value)); err != nil {
-				t.Fatal(err)
+		}
+	}
+	for i := range 3 {
+		select {
+		case d := <-deliveries[i]:
+			if d.ID != (brb.BroadcastID{Origin: origin, Sequence: 1}) || string(d.Value) != value {
+				t.Fatalf("node %d: %+v", i+1, d)
 			}
-			if mode != "silent" {
-				phase := "echo"
-				want := map[uint32]string{1: "iello", 2: "iello", 3: "iello"}
-				if mode == "equivocate" {
-					phase = "propose"
-					want = map[uint32]string{1: "A", 2: "B", 3: "A"}
-				}
-				for len(want) > 0 {
-					select {
-					case event := <-observed:
-						if event.phase != phase {
-							continue
-						}
-						expected, ok := want[event.receiver]
-						if !ok || event.value != expected || event.id != (brb.BroadcastID{Origin: origin, Sequence: 1}) {
-							t.Fatalf("unexpected faulty message: %+v, remaining expectations: %v", event, want)
-						}
-						delete(want, event.receiver)
-					case <-ctx.Done():
-						t.Fatalf("%s fault was not observed at replicas %v", mode, want)
-					}
-				}
-			}
-			for i := range 3 {
-				select {
-				case d := <-deliveries[i]:
-					if d.ID != (brb.BroadcastID{Origin: origin, Sequence: 1}) || string(d.Value) != value {
-						t.Fatalf("node %d: %+v", i+1, d)
-					}
-				case <-ctx.Done():
-					t.Fatalf("node %d did not deliver in %s scenario", i+1, mode)
-				}
-			}
-		})
+		case <-ctx.Done():
+			t.Fatalf("node %d did not deliver in %s scenario", i+1, mode)
+		}
 	}
 }
 
 // The faults run over authenticated TLS, as in the final experiments. The
 // faulty replica uses its own certificate and therefore its own identity.
 func TestFaultModesWriteOnlyCorrectOriginReports(t *testing.T) {
-	for _, mode := range []string{"silent", "wrong-echo", "equivocate"} {
-		t.Run(mode, func(t *testing.T) {
-			peers := addresses(t, 4)
-			creds := benchCreds(t, peers)
-			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-			defer cancel()
-			paths := make([]string, 4)
-			done := make(chan error, 4)
-			for i, addr := range peers {
-				paths[i] = filepath.Join(t.TempDir(), "result.binpb")
-				opts, err := ParseOptions([]string{"-tls-dir=" + nodeCreds(creds, i+1), "-self=" + addr, "-remotes=" + strings.Join(peers, ","), "-fault=" + mode,
-					"-output=" + paths[i], "-time=100ms", "-payload=256", "-rate=50"}, io.Discard)
-				if err != nil {
-					t.Fatal(err)
-				}
-				go func() { done <- Run(ctx, opts) }()
-			}
-			for range 4 {
-				if err := <-done; err != nil {
-					t.Fatal(err)
-				}
-			}
-			for i, path := range paths[:3] {
-				checkReport(t, path, 4, 1, 256)
-				report, err := benchkit.LoadReport(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				want := fmt.Sprintf("node %d f=1 auth=tls fail-fast=true fault=%s fault-node=4 kill-after=0s", i+1, mode)
-				if report.GetLabel() != want {
-					t.Fatalf("scenario not recorded: %s", report.GetLabel())
-				}
-			}
-			if _, err := os.Stat(paths[3]); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("faulty origin wrote a measurement: %v", err)
-			}
-		})
+	for _, digest := range []bool{false, true} {
+		for _, mode := range []string{"silent", "wrong-echo", "equivocate"} {
+			t.Run(map[bool]string{false: "bracha", true: "ready-digest"}[digest]+"/"+mode, func(t *testing.T) {
+				testFaultModeReports(t, mode, digest)
+			})
+		}
+	}
+}
+
+func testFaultModeReports(t *testing.T, mode string, digest bool) {
+	peers := addresses(t, 4)
+	creds := benchCreds(t, peers)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	paths := make([]string, 4)
+	done := make(chan error, 4)
+	for i, addr := range peers {
+		paths[i] = filepath.Join(t.TempDir(), "result.binpb")
+		args := []string{"-tls-dir=" + nodeCreds(creds, i+1), "-self=" + addr, "-remotes=" + strings.Join(peers, ","), "-fault=" + mode,
+			"-output=" + paths[i], "-time=100ms", "-payload=256", "-rate=50"}
+		if digest {
+			args = append(args, "-ready-digest")
+		}
+		opts, err := ParseOptions(args, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { done <- Run(ctx, opts) }()
+	}
+	for range 4 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	name, variant := benchmarkName, ""
+	if digest {
+		name, variant = "BrachaDigestLocalDelivery", " ready-digest=true"
+	}
+	for i, path := range paths[:3] {
+		checkReport(t, path, 4, 1, 256, name)
+		report, err := benchkit.LoadReport(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := fmt.Sprintf("node %d f=1 auth=tls%s fail-fast=true fault=%s fault-node=4 kill-after=0s", i+1, variant, mode)
+		if report.GetLabel() != want {
+			t.Fatalf("scenario not recorded: %s", report.GetLabel())
+		}
+	}
+	if _, err := os.Stat(paths[3]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("faulty origin wrote a measurement: %v", err)
 	}
 }
 

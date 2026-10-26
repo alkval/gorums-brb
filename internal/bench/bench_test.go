@@ -42,6 +42,23 @@ func TestParseOptions(t *testing.T) {
 	}
 }
 
+func TestReadyDigestOptions(t *testing.T) {
+	base := []string{"-plaintext", "-self=127.0.0.1:9000", "-remotes=127.0.0.1:9000,127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003", "-output=result.binpb", "-ready-digest"}
+	opts, err := ParseOptions(base, io.Discard)
+	if err != nil || !opts.digest || opts.benchmarkName() != "BrachaDigestLocalDelivery" {
+		t.Fatalf("options: %+v %v", opts, err)
+	}
+	// The variant is Bracha-based, so controlled faults are allowed.
+	if _, err := ParseOptions(append(append([]string{}, base...), "-fault=silent"), io.Discard); err != nil {
+		t.Fatalf("rejected a fault: %v", err)
+	}
+	for _, extra := range []string{"-optimistic", "-benchmarks=^BrachaLocalDelivery$"} {
+		if _, err := ParseOptions(append(append([]string{}, base...), extra), io.Discard); err == nil {
+			t.Fatalf("accepted %s", extra)
+		}
+	}
+}
+
 func TestOptimisticOptions(t *testing.T) {
 	base := []string{"-plaintext", "-self=127.0.0.1:9000", "-remotes=127.0.0.1:9000,127.0.0.1:9001,127.0.0.1:9002,127.0.0.1:9003", "-output=result.binpb", "-optimistic"}
 	opts, err := ParseOptions(base, io.Discard)
@@ -504,10 +521,24 @@ func TestBenchmarkRequiresDeliveryBeforeReporting(t *testing.T) {
 }
 
 func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
+	for _, digest := range []bool{false, true} {
+		t.Run(map[bool]string{false: "bracha", true: "ready-digest"}[digest], func(t *testing.T) {
+			testTrafficPerPhase(t, digest)
+		})
+	}
+}
+
+func testTrafficPerPhase(t *testing.T, digest bool) {
 	peer := addresses(t, 1)[0]
 	path := filepath.Join(t.TempDir(), "result.binpb")
-	opts, err := ParseOptions([]string{"-plaintext", "-self=" + peer, "-remotes=" + peer, "-f=0",
-		"-output=" + path, "-time=50ms", "-workers=2", "-payload=100"}, io.Discard)
+	args := []string{"-plaintext", "-self=" + peer, "-remotes=" + peer, "-f=0",
+		"-output=" + path, "-time=50ms", "-workers=2", "-payload=100"}
+	variant := brbv1.Variant_VARIANT_BRACHA
+	if digest {
+		args = append(args, "-ready-digest")
+		variant = brbv1.Variant_VARIANT_BRACHA_READY_DIGEST
+	}
+	opts, err := ParseOptions(args, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,12 +572,18 @@ func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
 	// READY to itself and nothing remotely. Sequences run from 1 to TotalOps,
 	// so the exact byte sum also covers sequence-varint growth.
 	ops := report.GetResults()[0].GetTotalOps()
-	var wantBytes uint64
+	// In the digest variant, READY carries the 32-byte digest instead of the value.
+	wantBytes := map[string]uint64{}
 	for seq := uint64(1); seq <= ops; seq++ {
-		wantBytes += uint64(proto.Size(brbv1.PhaseMessage_builder{
-			Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: seq}.Build(),
-			Value: make([]byte, 100),
-		}.Build()))
+		id := brbv1.BroadcastID_builder{Origin: 1, Sequence: seq}.Build()
+		full := uint64(proto.Size(brbv1.PhaseMessage_builder{Id: id, Value: make([]byte, 100), Variant: variant}.Build()))
+		ready := full
+		if digest {
+			ready = uint64(proto.Size(brbv1.PhaseMessage_builder{Id: id, Variant: variant, Digest: make([]byte, 32)}.Build()))
+		}
+		wantBytes["propose"] += full
+		wantBytes["echo"] += full
+		wantBytes["ready"] += ready
 	}
 	for _, phase := range []string{"propose", "echo", "ready"} {
 		var calls, remote, remoteBytes, local, localBytes uint64
@@ -559,9 +596,9 @@ func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
 			&calls, &remote, &remoteBytes, &local, &localBytes); err != nil {
 			t.Fatal(err)
 		}
-		if calls != ops || local != ops || remote != 0 || remoteBytes != 0 || localBytes != wantBytes {
+		if calls != ops || local != ops || remote != 0 || remoteBytes != 0 || localBytes != wantBytes[phase] {
 			t.Fatalf("%s: calls=%d local=%d remote=%d bytes=%d/%d, want %d calls and %d local bytes",
-				phase, calls, local, remote, remoteBytes, localBytes, ops, wantBytes)
+				phase, calls, local, remote, remoteBytes, localBytes, ops, wantBytes[phase])
 		}
 	}
 	if !strings.Contains(logged, "brb bench: node 1 traffic phase=qecho calls=0 ") {

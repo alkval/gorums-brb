@@ -42,11 +42,11 @@ func TestBenchmarkRequiresOneTransport(t *testing.T) {
 	}
 }
 
-// Both variants run over authenticated TLS, including the optimistic
-// variant's committee subsets and Q-ECHO phase.
+// All variants run over authenticated TLS, including the optimistic variant's
+// committee subsets and Q-ECHO phase and the digest-only READY messages.
 func TestAuthenticatedBenchmarkProducesReports(t *testing.T) {
-	for _, optimistic := range []bool{false, true} {
-		t.Run(map[bool]string{false: "bracha", true: "optimistic"}[optimistic], func(t *testing.T) {
+	for _, variant := range []string{"bracha", "optimistic", "ready-digest"} {
+		t.Run(variant, func(t *testing.T) {
 			peers := addresses(t, 4)
 			creds := benchCreds(t, peers)
 			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -57,8 +57,11 @@ func TestAuthenticatedBenchmarkProducesReports(t *testing.T) {
 				paths[i] = filepath.Join(t.TempDir(), "result.binpb")
 				args := []string{"-tls-dir=" + nodeCreds(creds, i+1), "-self=" + peer,
 					"-remotes=" + strings.Join(peers, ","), "-f=1", "-output=" + paths[i], "-time=200ms", "-payload=256"}
-				if optimistic {
+				switch variant {
+				case "optimistic":
 					args = append(args, "-optimistic", "-benchmarks=OptimisticLocalDelivery")
+				case "ready-digest":
+					args = append(args, "-ready-digest", "-benchmarks=BrachaDigestLocalDelivery")
 				}
 				opts, err := ParseOptions(args, io.Discard)
 				if err != nil {
@@ -72,8 +75,11 @@ func TestAuthenticatedBenchmarkProducesReports(t *testing.T) {
 				}
 			}
 			name, suffix := benchmarkName, ""
-			if optimistic {
+			switch variant {
+			case "optimistic":
 				name, suffix = "OptimisticLocalDelivery", " optimistic=true"
+			case "ready-digest":
+				name, suffix = "BrachaDigestLocalDelivery", " ready-digest=true"
 			}
 			for i, path := range paths {
 				checkReport(t, path, 4, 1, 256, name)

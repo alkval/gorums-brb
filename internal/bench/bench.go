@@ -17,6 +17,7 @@ import (
 	"github.com/alkval/gorums-brb/internal/brb"
 	"github.com/alkval/gorums-brb/internal/cluster"
 	"github.com/alkval/gorums-brb/internal/peertls"
+	brbv1 "github.com/alkval/gorums-brb/proto/brb/v1"
 	"github.com/relab/gorums"
 	"github.com/relab/gorums/benchkit"
 	"google.golang.org/grpc"
@@ -34,6 +35,7 @@ type Options struct {
 	fault      string
 	faultNode  uint
 	optimistic bool
+	digest     bool // READY carries a SHA-256 digest instead of the value
 	tlsDir     string
 	plaintext  bool
 }
@@ -46,10 +48,25 @@ func (o Options) auth() string {
 }
 
 func (o Options) benchmarkName() string {
-	if o.optimistic {
+	switch {
+	case o.optimistic:
 		return "OptimisticLocalDelivery"
+	case o.digest:
+		return "BrachaDigestLocalDelivery"
 	}
 	return benchmarkName
+}
+
+// variant is the protocol variant that every message of this run carries,
+// including those sent by a controlled faulty replica.
+func (o Options) variant() brbv1.Variant {
+	switch {
+	case o.optimistic:
+		return brbv1.Variant_VARIANT_OPTIMISTIC
+	case o.digest:
+		return brbv1.Variant_VARIANT_BRACHA_READY_DIGEST
+	}
+	return brbv1.Variant_VARIANT_BRACHA
 }
 
 func ParseOptions(args []string, output io.Writer) (Options, error) {
@@ -58,6 +75,7 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	opts := Options{StandardFlags: benchkit.RegisterFlags(fs)}
 	fs.IntVar(&opts.f, "f", -1, "fault bound (default: (n-1)/3)")
 	fs.BoolVar(&opts.optimistic, "optimistic", false, "use experimental rotating committees without recovery (all nodes)")
+	fs.BoolVar(&opts.digest, "ready-digest", false, "send a SHA-256 digest instead of the value in READY (all nodes)")
 	fs.BoolVar(&opts.failFast, "fail-fast", false, "report unavailable-peer sends promptly for fault diagnostics; correct peers must already be connected")
 	fs.StringVar(&opts.fault, "fault", "none", "faulty replica behavior: none, silent, equivocate, wrong-echo")
 	fs.UintVar(&opts.faultNode, "fault-node", 0, "faulty replica ID (default: last replica)")
@@ -110,6 +128,9 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	case "none", "silent", "equivocate", "wrong-echo":
 	default:
 		return opts, errors.New("brb: unknown fault behavior")
+	}
+	if opts.optimistic && opts.digest {
+		return opts, errors.New("brb bench: -optimistic and -ready-digest cannot be combined")
 	}
 	if (opts.tlsDir == "") == !opts.plaintext {
 		return opts, errors.New("brb bench: use exactly one of -tls-dir and -plaintext")
@@ -175,6 +196,9 @@ func Run(parent context.Context, opts Options) error {
 	if opts.optimistic {
 		label += " optimistic=true"
 	}
+	if opts.digest {
+		label += " ready-digest=true"
+	}
 	if opts.failFast {
 		label += " fail-fast=true"
 	}
@@ -235,8 +259,11 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 	benchkit.RegisterControlServer(server, readyControl{Control: control, probed: probed})
 
 	newReplica := brb.NewReplica
-	if opts.optimistic {
+	switch {
+	case opts.optimistic:
 		newReplica = brb.NewOptimisticReplica
+	case opts.digest:
+		newReplica = brb.NewReadyDigestReplica
 	}
 	replica, err := newReplica(ctx, server, opts.f, deliver)
 	if err != nil {
@@ -245,7 +272,7 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 		return nil, err
 	}
 	if uint(opts.selfID) == opts.faultNode && opts.fault != "none" {
-		registerFault(ctx, server, opts.fault)
+		registerFault(ctx, server, opts.fault, opts.variant())
 	}
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
