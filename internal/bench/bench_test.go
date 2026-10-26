@@ -124,44 +124,86 @@ func TestLocalDeliveryAndReport(t *testing.T) {
 	}
 }
 
+// A group member sends one far-future ECHO under its own identity. Votes are
+// attributed to the transport sender, so the violation must come from a member.
 func TestWindowViolationPreventsReport(t *testing.T) {
-	peer := addresses(t, 1)[0]
-	path := filepath.Join(t.TempDir(), "result.binpb")
-	opts, err := ParseOptions([]string{"-self=" + peer, "-remotes=" + peer,
-		"-output=" + path, "-time=500ms", "-rate=10"}, io.Discard)
+	peers := addresses(t, 4)
+	listener, err := net.Listen("tcp", peers[3])
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- Run(ctx, opts) }()
-	config, closeConfig, err := gorums.NewConfig(gorums.WithNodeList([]string{peer}),
+	peer := gorums.NewServer(gorums.WithPeers(4, gorums.WithNodeList(peers),
 		gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.WaitForReady(true))))
-	if err != nil {
+			grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))))
+	t.Cleanup(peer.Stop)
+	started := make(chan uint32, 3)
+	brbv1.RegisterBrachaServer(peer, quietBenchmarkPeer{started: started})
+	benchkit.RegisterControlServer(peer, benchkit.NewControl())
+	go func() { _ = peer.Serve(listener) }()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	results := make([]chan error, 3)
+	paths := make([]string, 3)
+	for i, addr := range peers[:3] {
+		paths[i] = filepath.Join(t.TempDir(), "result.binpb")
+		opts, err := ParseOptions([]string{"-self=" + addr, "-remotes=" + strings.Join(peers, ","),
+			"-f=1", "-output=" + paths[i], "-time=500ms", "-rate=20"}, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		results[i] = make(chan error, 1)
+		go func() { results[i] <- Run(ctx, opts) }()
+	}
+	// Wait until node 1 is originating broadcasts, then send it the violation.
+	for id := uint32(0); id != 1; {
+		select {
+		case id = <-started:
+		case <-ctx.Done():
+			t.Fatal("node 1 did not start its workload")
+		}
+	}
+	// The peer learns of node 1 through node 1's inbound stream. Wait for its own
+	// outbound connections before sending.
+	if err := peer.WaitForPeers(ctx, func(c gorums.Config) bool { return len(c) == 4 }); err != nil {
 		t.Fatal(err)
 	}
-	defer closeConfig()
-	// The normal workload can still complete its own broadcasts. This injected
-	// message must nevertheless disqualify the resulting measurement.
+	var toNode1 gorums.Config
+	for _, node := range peer.PeerConfig() {
+		if node.ID() == 1 {
+			toNode1 = gorums.Config{node}
+		}
+	}
 	msg := brbv1.PhaseMessage_builder{
-		Id:     brbv1.BroadcastID_builder{Origin: 1, Sequence: ^uint64(0)}.Build(),
-		Sender: 1, Value: []byte("outside window"),
+		Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: ^uint64(0)}.Build(),
+		Value: []byte("outside window"),
 	}.Build()
-	if err := brbv1.Echo(config.Context(ctx), msg).Send(); err != nil {
+	if err := brbv1.Echo(toNode1.Context(ctx), msg).Send(); err != nil {
 		t.Fatal(err)
 	}
+	// Signal completion so the correct replicas do not wait for the timeout.
+	_ = benchkit.Done(peer.PeerConfig().Context(ctx), benchkit.DoneRequest_builder{SenderId: 4}.Build()).Send()
 	select {
-	case err := <-done:
+	case err := <-results[0]:
 		if !errors.Is(err, brb.ErrOutsideWindow) {
 			t.Fatalf("window violation returned %v", err)
 		}
 	case <-ctx.Done():
 		t.Fatal("benchmark did not finish")
 	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(paths[0]); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("invalid run wrote a report: %v", err)
+	}
+	// The other replicas never received the violation and report normally.
+	for i := 1; i < 3; i++ {
+		select {
+		case err := <-results[i]:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("benchmark did not finish")
+		}
+		checkReport(t, paths[i], 4, 1, 0)
 	}
 }
 
@@ -336,9 +378,9 @@ func TestPeerCompletionWithCrashedPeer(t *testing.T) {
 // phase messages but sends no votes, so only the three correct replicas deliver.
 type quietBenchmarkPeer struct{ started chan<- uint32 }
 
-func (p quietBenchmarkPeer) Propose(_ gorums.ServerContext, msg *brbv1.PhaseMessage) {
+func (p quietBenchmarkPeer) Propose(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 	if msg.GetId().GetSequence() == 1 {
-		p.started <- msg.GetSender()
+		p.started <- ctx.SenderID()
 	}
 }
 func (quietBenchmarkPeer) Echo(gorums.ServerContext, *brbv1.PhaseMessage)  {}
@@ -503,7 +545,7 @@ func TestBenchmarkLogsTrafficPerPhase(t *testing.T) {
 	for seq := uint64(1); seq <= ops; seq++ {
 		wantBytes += uint64(proto.Size(brbv1.PhaseMessage_builder{
 			Id:    brbv1.BroadcastID_builder{Origin: 1, Sequence: seq}.Build(),
-			Value: make([]byte, 100), Sender: 1,
+			Value: make([]byte, 100),
 		}.Build()))
 	}
 	for _, phase := range []string{"propose", "echo", "ready"} {

@@ -31,8 +31,9 @@ type Traffic struct {
 	LocalBytes     uint64
 }
 
-// Replica connects the state machine to Gorums multicast.
-// Sender IDs are trusted for now. Authentication is deliberately deferred.
+// Replica connects the state machine to Gorums multicast. Votes are counted by
+// the peer ID that Gorums reports, which is verified only when the peers are
+// configured with TLS identities.
 type Replica struct {
 	self           ProcessID
 	machine        *StateMachine
@@ -184,7 +185,7 @@ func (n *Replica) QEcho(ctx gorums.ServerContext, msg *brbv1.PhaseMessage) {
 }
 
 func (n *Replica) message(id BroadcastID, value []byte) *brbv1.PhaseMessage {
-	msg := phaseMessage(n.self, id, value)
+	msg := phaseMessage(id, value)
 	msg.SetOptimistic(n.machine.optimistic)
 	return msg
 }
@@ -245,6 +246,15 @@ func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.Phase
 	// StateMachine.Handle has its own lock. Release Gorums before sending to self
 	// or calling user code, which can cause more requests to this node.
 	ctx.Release()
+	n.handleFrom(ProcessID(ctx.SenderID()), phase, msg)
+}
+
+// handleFrom counts msg as a vote from sender, the peer ID that Gorums reports
+// for the stream. With TLS peer identities, Gorums verifies that ID against the
+// peer's certificate before any handler runs. Self-sends report this replica's
+// own ID. Senders outside 1..n, such as anonymous clients, are rejected by
+// StateMachine.Handle before any state is allocated.
+func (n *Replica) handleFrom(sender ProcessID, phase Phase, msg *brbv1.PhaseMessage) {
 	if n.ctx.Err() != nil {
 		return
 	}
@@ -257,7 +267,7 @@ func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.Phase
 		return
 	}
 	id := BroadcastID{Origin: ProcessID(msg.GetId().GetOrigin()), Sequence: msg.GetId().GetSequence()}
-	actions, err := n.machine.Handle(ProcessID(msg.GetSender()), phase, id, msg.GetValue())
+	actions, err := n.machine.Handle(sender, phase, id, msg.GetValue())
 	if err != nil {
 		if errors.Is(err, ErrOutsideWindow) {
 			n.windowExceeded.Store(true)
@@ -290,9 +300,9 @@ func (n *Replica) performActions(actions []Action) {
 	}
 }
 
-func phaseMessage(sender ProcessID, id BroadcastID, value []byte) *brbv1.PhaseMessage {
+func phaseMessage(id BroadcastID, value []byte) *brbv1.PhaseMessage {
 	return brbv1.PhaseMessage_builder{
 		Id:    brbv1.BroadcastID_builder{Origin: uint32(id.Origin), Sequence: id.Sequence}.Build(),
-		Value: append([]byte(nil), value...), Sender: uint32(sender),
+		Value: append([]byte(nil), value...),
 	}.Build()
 }
