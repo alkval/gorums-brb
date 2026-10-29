@@ -343,3 +343,147 @@ The heap limit is checked on samples, so it is not a hard memory limit: it
 leaves out stacks and other memory, and allocation can overshoot between
 samples. Each replica has its own guard; the others carry on until their own
 run ends. Record the limits with every run that uses them.
+
+### Linux TCP diagnostic rounds
+
+`-diag-net -diag-interval=1s` adds an opt-in Linux collector. It leaves the
+protocol, transport, sampler and resource limits unchanged. Unsupported
+platforms and a missing sampling interval are rejected. The collector writes
+through a duplicate of stderr's existing descriptor, supporting pipes, SSH
+socketpairs and regular files. The duplicate shares the existing file offset
+and flags. Raw writes avoid taking the Go stderr write mutex or closing the
+original descriptor. Actual writes can still block on the underlying sink,
+as can the benchmark's other logging.
+
+Each line starts with `brb bench: node N diag net ` followed by one JSON
+object, schema version 1. Common fields are `version`, `round` (zero-based),
+`kind`, `phase` (`initial`, `periodic`, `final`), `start_ms`, `end_ms`, and
+`anchor_utc`. The offsets are actual monotonic read start/end times since the
+measurement window opened. The anchor is that window start in UTC. Files,
+replicas and the two ends of a connection are read at different times.
+
+- `kind=socket` has a `socket` object. Only sockets between configured member
+  IPs, with the configured benchmark listening port at one end, are included.
+  IPv4, IPv6 and IPv4-mapped IPv6 entries are supported. LISTEN entries are
+  excluded. `peer` and `role` (`dialed` or `accepted`) identify the other node
+  and the local connection direction. The address-free pairing key is
+  (`dialer`, `acceptor`, `client_port`): the last field is the dialer's
+  ephemeral port, also visible at the acceptor. Opposite directions have
+  different keys. This maps membership endpoints, not process ownership.
+- `state` is the numeric Linux TCP state. For ESTABLISHED (`1`), `tx_queue`
+  includes unsent and unacknowledged bytes, and `rx_queue` is unread bytes.
+  `timer_active=1` also covers reorder and loss-probe timers, so it does not
+  alone identify an RTO. `timer_ticks` is the raw exported countdown, with no
+  assumed tick frequency. `unrecovered_rto` is the current retransmission
+  count, not a lifetime total. `zero_window_probes` is the column whose procfs
+  header says `timeout`. Other states, including TIME_WAIT, have
+  `field_status=state_only` and null queue/timer fields.
+- `generation` and `lifecycle` track observations locally, using an internal
+  inode that is never logged. Replacement or reappearance of the same key
+  sets `reconnect=true`; it is an observation, not proof of a reconnect.
+  A different port for a previously seen node pair is marked as a possible
+  reconnect and ambiguous, since parallel connections are also possible.
+  Duplicate keys and a peer IP shared by several possible senders are marked
+  `ambiguous=true`. An unresolved accepted sender has `peer=0` and
+  `dialer=0`. Unknown lifecycle has generation zero. Generations need not
+  match across replicas. History is bounded and absence is inferred only
+  when both TCP files were parsed completely.
+- `kind=round` is the footer. Its `summary` contains source statuses and
+  byte/entry counts for `tcp`, `tcp6`, `snmp` and `netstat` (TCP rows scanned,
+  or requested counters extracted), the socket count,
+  problems, and an `unobserved` list of peer/role combinations with no socket
+  in this round. Absence is not a zero queue. It can also reflect closing
+  connections, read failures, or the timing of the reads. Every matching
+  state, including non-ESTABLISHED states, counts as observed. This list does
+  not identify missing ESTABLISHED connections.
+- The footer's counters are host-wide cumulative `Tcp.RetransSegs`,
+  `Tcp.OutSegs` and `TcpExt.TCPTimeouts`, not BRB-only counts. Each has a
+  source `status`, nullable `value`, `delta_status` and nullable `delta`.
+  A delta requires consecutive valid reads of that counter. Decreases are
+  marked `reset`; a missing read breaks the baseline. `initial`, `reset` and
+  `unavailable` deltas are null, never zero placeholders.
+- `kind=missed` records a range of periodic cadence slots that were not
+  collected. Round numbers count actual rounds; slots count intervals since
+  the window start. The collector catches up with one current round instead
+  of creating workers for missed slots. The slot represented by the current
+  round, including a final round, is excluded from the missed range.
+- `kind=terminal` has a `terminal` object with a `status` of
+  `output_unavailable`, `output_limit` or `shutdown_timeout`. It is a
+  best-effort marker: a broken or blocked sink can prevent it from arriving.
+  Its offsets give the marker attempt time. It is not a successful final round.
+
+There is one persistent worker, independent of the resource sampler, with at
+most one round in flight. Each source is capped at 2 MiB and 16,384 entries;
+socket output and lifecycle history are each capped at 256 entries. A round
+has at most 256 KiB of output and each line at most 4 KiB. Read, parse, byte,
+entry and socket limits are explicit source statuses. Ambiguity and a full
+history are explicit round problems. Partial rounds remain diagnostic data.
+Raw addresses, hostnames, usernames, uids, inodes and kernel pointers are
+never included in these records or collector errors.
+
+Normal shutdown requests a final round and joins the worker. The wait is
+capped at two seconds. A timeout cancels collection and stops new round
+output. An in-flight read or write may finish later, followed only by a
+best-effort terminal marker; the worker then closes its duplicate descriptor.
+There is no replacement worker or separate status writer. The join budget
+bounds the caller's wait, not the kernel's syscall completion.
+
+A sink failure, output-size limit or shutdown timeout ends network collection
+but does not suppress a valid benchmark report or change its exit status.
+The validator marks the network capture incomplete using the shutdown status,
+terminal record, missing final round or missing footer. An unfinished round
+at the end of a node's capture is `truncated_without_terminal` when no marker
+arrives, or `truncated_despite_ok_status` if the main line reported `ok`.
+If later rounds follow an unfinished round, the capture is invalid.
+All present lines still undergo schema, key and consistency checks. Resource stops
+and protocol invalidity continue to suppress reports. The resource guard does
+not depend on network reads. A fully blocked stderr can still delay ordinary
+logging, so this is not a timeout guarantee for all benchmark I/O.
+
+Once the `-diag-net` collector is constructed, the main goroutine also emits
+exactly one ordinary shutdown line, after stopping the sampler (and after a
+successful report write):
+
+```text
+brb bench: node 3 diag net-status status=shutdown_timeout
+```
+
+The status is `ok`, `not_started`, `shutdown_timeout`, `output_unavailable`,
+`output_limit` or `unavailable_sink`. `not_started` means the collector never
+began a round, for example after a startup failure. It takes precedence over
+sink status before collection begins, and cannot accompany round/terminal data. Unlike the worker's terminal marker, this line does not
+wait for a blocked collector to finish. It still uses ordinary stderr logging.
+`ok` means no collector failure was detected at shutdown, not that all source
+reads succeeded or the saved capture is complete. Missing shutdown lines make
+the capture incomplete. Duplicate lines, node/host mismatches and contradictory
+terminal/status pairs are invalid. `unavailable_sink` can accompany a worker
+`output_unavailable` marker. A caller's `shutdown_timeout` may follow an earlier
+worker output failure if its terminal write then blocked.
+
+A timeout just after a complete final footer may produce a terminal marker
+and therefore an incomplete capture. The validator keeps that conservative
+classification even though all round data may have arrived. Shutdown metadata
+can follow truncated round data; it does not count as a later round.
+
+Validate one saved sweep log with the repository's read-only validator:
+
+```sh
+python3 tools/validate-diag-net.py RUN_LOG --manifest MANIFEST --nodes 13 \
+  --duration-s 30 --interval-s 1
+python3 -m unittest discover -s tools -p 'test_validate_diag_net.py'
+go test ./internal/bench -run '^$' -bench BenchmarkNetDiagRound -benchmem
+```
+
+Run these from the repository root. The validator checks schema, source and
+counter consistency, node/host binding, socket keys, initial/final rounds and
+cadence. Exit 0 means complete capture, 1 invalid, and 4 incomplete. It lists
+unmatched established socket keys across the capture without assuming that
+both endpoints were sampled simultaneously. It supplements the sample,
+resource-stop, report and trial checks. The benchmark measures fixture
+parsing, mapping and formatting with a discarded sink; it excludes procfs I/O
+and actual log transport. Record a Linux capability/overhead check before
+using this option for retained distributed measurements. That check must record
+stderr's type under the actual SSH exec setup and whether Gorums/gRPC keeps
+multiple connections for one ordered dialer/acceptor pair. Parallel connections
+could trigger the possible-reconnect ambiguity heuristic; resolve how they
+will be interpreted before the two diagnostic trials.
