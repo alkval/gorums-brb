@@ -38,6 +38,11 @@ type Options struct {
 	digest     bool // READY carries a SHA-256 digest instead of the value
 	tlsDir     string
 	plaintext  bool
+	// Diagnostic samples and the resource guard, both off by default.
+	diagInterval time.Duration
+	limits       resourceLimits
+	// readResources replaces the sampler's metric reads in tests; nil in use.
+	readResources func() (resources, error)
 }
 
 func (o Options) auth() string {
@@ -81,6 +86,9 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	fs.UintVar(&opts.faultNode, "fault-node", 0, "faulty replica ID (default: last replica)")
 	fs.StringVar(&opts.tlsDir, "tls-dir", "", "this replica's credentials (ca.pem, node.pem, node-key.pem); required unless -plaintext")
 	fs.BoolVar(&opts.plaintext, "plaintext", false, "run without TLS and with unverified sender IDs, only for a labelled transport comparison")
+	fs.DurationVar(&opts.diagInterval, "diag-interval", 0, "print a diagnostic sample at this interval during the measurement (0: off)")
+	fs.Uint64Var(&opts.limits.heapObjects, "guard-heap-objects", 0, "stop the run, without a report, if a sample shows more heap object bytes than this (0: off; needs -diag-interval)")
+	fs.Uint64Var(&opts.limits.goroutines, "guard-goroutines", 0, "stop the run, without a report, if a sample shows more goroutines than this (0: off; needs -diag-interval)")
 	if err := fs.Parse(args); err != nil {
 		return opts, err
 	}
@@ -129,6 +137,9 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	default:
 		return opts, errors.New("brb: unknown fault behavior")
 	}
+	if opts.diagInterval < 0 || (opts.limits.enabled() && opts.diagInterval == 0) {
+		return opts, errors.New("brb bench: -diag-interval must be positive when a resource guard is set")
+	}
 	if opts.optimistic && opts.digest {
 		return opts, errors.New("brb bench: -optimistic and -ready-digest cannot be combined")
 	}
@@ -160,12 +171,26 @@ func Run(parent context.Context, opts Options) error {
 	if err != nil {
 		return err
 	}
+	samples := newSampler(opts.selfID, opts.diagInterval, opts.limits, node.replica,
+		func() uint64 { _, total := tracker.counts(); return total }, cancel)
+	if opts.readResources != nil {
+		samples.read = opts.readResources
+	}
 	defer func() {
 		cancel()
 		node.server.Stop()
+		samples.stop()
 		node.replica.LogMulticastFailures()
 		logDiagnostics(opts.selfID, node.replica, origin)
 	}()
+	// A resource stop cancels the run; report it as the cause of the failure.
+	failed := func(err error) error {
+		samples.stop()
+		if reason := samples.stopReason(); reason != "" {
+			return fmt.Errorf("brb bench: resource stop (%s), no report: %w", reason, err)
+		}
+		return err
+	}
 	if err := awaitPeers(ctx, node, opts); err != nil {
 		return err
 	}
@@ -176,20 +201,26 @@ func Run(parent context.Context, opts Options) error {
 	if uint(opts.selfID) == opts.faultNode && opts.fault != "none" {
 		return runFault(ctx, node, opts)
 	}
-	results, failures, err := measure(ctx, cancel, node, opts, tracker, origin)
+	results, failures, err := measure(ctx, cancel, node, opts, tracker, origin, samples)
 	if err != nil {
-		return err
+		return failed(err)
 	}
 	missing, err := finishPeers(ctx, node.server, opts.selfID, node.control, node.done, completionTimeout(len(opts.Remotes)))
 	if err != nil {
-		return err
+		return failed(err)
 	}
 	if err := waitGrace(ctx, time.Second); err != nil {
-		return err
+		return failed(err)
 	}
-	// Stop accepting traffic before checking the run's window status.
+	// Stop accepting traffic before checking the run's window status. The
+	// final sample is taken, and the guard's latch read, before any report
+	// decision.
 	cancel()
 	node.server.Stop()
+	samples.stop()
+	if reason := samples.stopReason(); reason != "" {
+		return fmt.Errorf("brb bench: resource stop (%s), no report", reason)
+	}
 	if err := node.replica.WindowError(); err != nil {
 		return fmt.Errorf("brb bench: invalid run: %w", err)
 	}
@@ -362,7 +393,8 @@ func awaitPeers(ctx context.Context, node *benchmarkNode, opts Options) error {
 	return nil
 }
 
-func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode, opts Options, tracker *deliveryTracker, origin *originTiming) ([]*benchkit.Result, uint64, error) {
+func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode, opts Options, tracker *deliveryTracker,
+	origin *originTiming, samples *sampler) ([]*benchkit.Result, uint64, error) {
 	var sequence atomic.Uint64
 	var sendFailures atomic.Uint64
 	value := bytes.Repeat([]byte{'x'}, opts.Payload)
@@ -374,6 +406,7 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 			measurement := benchkit.StartMeasurement(o)
 			defer measurement.Abandon()
 			start, end := tracker.open(o.Duration)
+			samples.begin(start)
 			// Stop pacing at the deadline without cancelling broadcasts already
 			// started. Those still use the enclosing run context to finish.
 			phaseCtx, phaseCancel := context.WithDeadline(ctx, end)
@@ -406,6 +439,7 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 						return err
 					}
 					measurement.Stats.AddLatency(deliveredAt.Sub(startedAt))
+					samples.completed()
 					return nil
 				})
 			if err != nil {

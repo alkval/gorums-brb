@@ -304,3 +304,42 @@ brb bench: node 3 diag window first origin=N phase=echo sender=N sequence=N pref
 - The timing adds two clock reads per send and per origin broadcast; compare
   runs with the same source when judging its overhead. These lines show where
   time is spent, not why: they do not identify a peer, queue or network cause.
+
+### Per-interval samples and the resource guard
+
+Both are off by default. `-diag-interval=1s` prints one sample per interval
+from the start of the measurement window, plus a final one at shutdown:
+
+```text
+brb bench: node 3 diag sample t_ms=N propose_out=N echo_out=N ready_out=N propose_oldest_ms=N echo_oldest_ms=N ready_oldest_ms=N completions=N deliveries=N goroutines=N heap_objects=N heap_stacks=N
+```
+
+- `t_ms` is the actual time since the window start, so late or missed samples
+  show as gaps. Each line's fields are read one after another, not as one
+  atomic snapshot.
+- `*_out` and `*_oldest_ms` are the outstanding `Send` calls per phase and the
+  age of the oldest one, as in `diag send`.
+- `completions` counts operations at the point the benchmark records a
+  success, so the final sample equals the report's total operations on a
+  successful run. `deliveries` counts this replica's local deliveries from
+  every origin.
+- `goroutines`, `heap_objects` and `heap_stacks` are process-wide values
+  from `runtime/metrics` (`/sched/goroutines`, `/memory/classes/heap/objects`,
+  `/memory/classes/heap/stacks`), read without forcing a GC. Heap object bytes
+  include objects not yet reclaimed.
+
+`-guard-heap-objects=BYTES` and `-guard-goroutines=N` (both need
+`-diag-interval`) are an intentional benchmark-abort policy, not a
+measurement. If a sample exceeds a limit, or the metrics cannot be read while
+a limit is set (`reason=metrics_unavailable`, with zero values), the replica
+cancels its run first, then prints the sample and one stop line, and writes no
+report, even if the measurement had already finished:
+
+```text
+brb bench: node 3 diag resource-stop reason=heap_objects heap_objects=N heap_objects_limit=N goroutines=N goroutines_limit=N t_ms=N
+```
+
+The heap limit is checked on samples, so it is not a hard memory limit: it
+leaves out stacks and other memory, and allocation can overshoot between
+samples. Each replica has its own guard; the others carry on until their own
+run ends. Record the limits with every run that uses them.
