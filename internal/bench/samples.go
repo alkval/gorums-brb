@@ -77,7 +77,10 @@ type sampler struct {
 	stopping            chan struct{}
 	start               time.Time
 
-	reason atomic.Pointer[string] // latched resource-stop reason
+	reason     atomic.Pointer[string] // latched resource-stop reason
+	net        *netCollector
+	netStatus  string
+	netLogOnce sync.Once
 }
 
 func newSampler(selfID uint32, interval time.Duration, limits resourceLimits, sends sendSource,
@@ -98,6 +101,9 @@ func (s *sampler) begin(start time.Time) {
 	}
 	s.startOnce.Do(func() {
 		s.start, s.done = start, make(chan struct{})
+		if s.net != nil {
+			s.net.begin(start)
+		}
 		s.sample()
 		go func() {
 			defer close(s.done)
@@ -121,11 +127,30 @@ func (s *sampler) stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopping)
 		if s.done == nil {
+			if s.net != nil {
+				s.net.stop()
+				s.netStatus = s.net.shutdownStatus
+			}
 			return // sampling never began
 		}
 		<-s.done
 		s.sample()
+		if s.net != nil {
+			s.net.stop()
+			s.netStatus = s.net.shutdownStatus
+		}
 	})
+}
+
+// logNetStatus is called by Run's main goroutine in its shutdown defer, after
+// stop (and after a successful report write). It does not rely on the worker
+// being able to finish a read/write or publish a terminal marker.
+func (s *sampler) logNetStatus() {
+	if s.net == nil {
+		return
+	}
+	s.stop()
+	s.netLogOnce.Do(func() { s.printf("brb bench: node %d diag net-status status=%s\n", s.selfID, s.netStatus) })
 }
 
 // stopReason returns the latched resource-stop reason, or "" if the guard has

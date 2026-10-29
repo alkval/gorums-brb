@@ -40,9 +40,12 @@ type Options struct {
 	plaintext  bool
 	// Diagnostic samples and the resource guard, both off by default.
 	diagInterval time.Duration
+	diagNet      bool
 	limits       resourceLimits
 	// readResources replaces the sampler's metric reads in tests; nil in use.
 	readResources func() (resources, error)
+	// makeNet replaces the platform collector in tests; nil in use.
+	makeNet func(uint32, []string, time.Duration) (*netCollector, error)
 }
 
 func (o Options) auth() string {
@@ -87,6 +90,7 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	fs.StringVar(&opts.tlsDir, "tls-dir", "", "this replica's credentials (ca.pem, node.pem, node-key.pem); required unless -plaintext")
 	fs.BoolVar(&opts.plaintext, "plaintext", false, "run without TLS and with unverified sender IDs, only for a labelled transport comparison")
 	fs.DurationVar(&opts.diagInterval, "diag-interval", 0, "print a diagnostic sample at this interval during the measurement (0: off)")
+	fs.BoolVar(&opts.diagNet, "diag-net", false, "collect address-free Linux TCP diagnostics (requires -diag-interval)")
 	fs.Uint64Var(&opts.limits.heapObjects, "guard-heap-objects", 0, "stop the run, without a report, if a sample shows more heap object bytes than this (0: off; needs -diag-interval)")
 	fs.Uint64Var(&opts.limits.goroutines, "guard-goroutines", 0, "stop the run, without a report, if a sample shows more goroutines than this (0: off; needs -diag-interval)")
 	if err := fs.Parse(args); err != nil {
@@ -140,6 +144,9 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	if opts.diagInterval < 0 || (opts.limits.enabled() && opts.diagInterval == 0) {
 		return opts, errors.New("brb bench: -diag-interval must be positive when a resource guard is set")
 	}
+	if opts.diagNet && (!netDiagSupported || opts.diagInterval <= 0) {
+		return opts, errors.New("brb bench: -diag-net requires Linux and a positive -diag-interval")
+	}
 	if opts.optimistic && opts.digest {
 		return opts, errors.New("brb bench: -optimistic and -ready-digest cannot be combined")
 	}
@@ -180,6 +187,7 @@ func Run(parent context.Context, opts Options) error {
 		cancel()
 		node.server.Stop()
 		samples.stop()
+		samples.logNetStatus()
 		node.replica.LogMulticastFailures()
 		logDiagnostics(opts.selfID, node.replica, origin)
 	}()
@@ -190,6 +198,19 @@ func Run(parent context.Context, opts Options) error {
 			return fmt.Errorf("brb bench: resource stop (%s), no report: %w", reason, err)
 		}
 		return err
+	}
+	if opts.diagNet {
+		if (!netDiagSupported && opts.makeNet == nil) || opts.diagInterval <= 0 {
+			return netStatusError("requires Linux and a positive -diag-interval")
+		}
+		factory := newNetCollector
+		if opts.makeNet != nil {
+			factory = opts.makeNet
+		}
+		samples.net, err = factory(opts.selfID, opts.Remotes, opts.diagInterval)
+		if err != nil {
+			return err
+		}
 	}
 	if err := awaitPeers(ctx, node, opts); err != nil {
 		return err
