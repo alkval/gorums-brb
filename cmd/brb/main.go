@@ -82,7 +82,7 @@ func commandMode(args []string) (string, []string, error) {
 		name := strings.TrimLeft(arg, "-")
 		if strings.HasPrefix(arg, "-") && !strings.Contains(arg, "=") &&
 			name != "h" && name != "help" && name != "verbose" && name != "fail-fast" && name != "optimistic" &&
-			name != "plaintext" && name != "ready-digest" && i+1 < len(args) {
+			name != "plaintext" && name != "ready-digest" && name != "diag-net" && i+1 < len(args) {
 			i++
 			rest = append(rest, args[i])
 		}
