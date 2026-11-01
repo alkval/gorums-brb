@@ -59,7 +59,7 @@ func (r observingReplica) Echo(ctx gorums.ServerContext, msg *brbv1.PhaseMessage
 func TestNetworkFaultScenarios(t *testing.T) {
 	variants := map[string]struct {
 		variant    brbv1.Variant
-		newReplica func(context.Context, *gorums.Server, int, func(brb.Delivery)) (*brb.Replica, error)
+		newReplica func(context.Context, *gorums.Server, int, func(brb.Delivery), ...brb.Option) (*brb.Replica, error)
 	}{
 		"bracha":       {brbv1.Variant_VARIANT_BRACHA, brb.NewReplica},
 		"ready-digest": {brbv1.Variant_VARIANT_BRACHA_READY_DIGEST, brb.NewReadyDigestReplica},
@@ -74,7 +74,7 @@ func TestNetworkFaultScenarios(t *testing.T) {
 }
 
 func testNetworkFault(t *testing.T, mode string, variant brbv1.Variant,
-	newReplica func(context.Context, *gorums.Server, int, func(brb.Delivery)) (*brb.Replica, error)) {
+	newReplica func(context.Context, *gorums.Server, int, func(brb.Delivery), ...brb.Option) (*brb.Replica, error)) {
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	systems, stop, err := gorums.NewLocalServers(4, gorums.WithLocalDialOptions(
@@ -93,6 +93,7 @@ func testNetworkFault(t *testing.T, mode string, variant brbv1.Variant,
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(nodes[i].Stop)
 		brbv1.RegisterBrachaServer(server, observingReplica{nodes[i], uint32(i + 1), observed})
 	}
 	registerFault(ctx, systems[3], mode, variant)

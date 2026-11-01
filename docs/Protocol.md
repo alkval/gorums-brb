@@ -66,6 +66,25 @@ violation and refuses to write its benchmark report, even if later broadcasts
 deliver. Discard the whole run, including other replicas' reports. Advancing
 the prefix to the highest observed sequence would lose earlier deliveries.
 
+Outbound messages go through one bounded queue per remote peer, each sent in
+order by one worker over that peer's existing connection. Each replica
+handles its own copy of a message directly. A transition and the queueing of
+the messages it causes are serialized, so every recipient receives a
+replica's messages in the order of its transitions, and an origin's PROPOSE
+before the ECHO it causes. `Broadcast` returns once PROPOSE is queued for
+every peer and the origin has handled its own copy. A slow or stopped peer
+therefore delays only its own queue, as long as that queue stays within its
+bound: by default `(2n+1)·1024` messages (`(3n+1)·1024` for the optimistic
+variant) and 128 MiB of marshalled messages. Messages are never dropped to
+make room. If a queue is full, the replica latches a capacity error, stops
+processing messages and the run is invalid. There is no catch-up for a peer
+that falls behind further. Under sustained overload of any outgoing link,
+including unpaced benchmark load, a run is therefore expected to fail with
+this error rather than complete unevenly. Evaluations use declared offered
+loads (`-rate`), with a capacity failure marking the overload boundary.
+Local deliveries reach the application one at a time in delivery order,
+carrying the time of the transition that delivered them.
+
 Sequence counters and prefixes are not persisted, so individual process
 recovery is outside the model. The whole group restarts between runs.
 
@@ -116,5 +135,6 @@ Reports count completed origin broadcasts and cannot establish all-replica
 delivery. Startup, completion coordination and the final drain are excluded.
 Per-replica delivery rates cannot be inferred from origin throughput, so each
 replica also logs a snapshot of its deliveries from every origin, inside its own
-measurement window and in total. Deliveries still in a handler at shutdown may
-be missing, so these counts are lower bounds.
+measurement window and in total. They are taken after the replica has
+stopped and handed over every queued delivery; messages still in transit at
+that point are never handled, so the counts are lower bounds.

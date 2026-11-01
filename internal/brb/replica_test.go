@@ -33,8 +33,8 @@ func TestMulticastFailureLogging(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 100 {
 		wg.Go(func() {
-			node.recordMulticastFailure(Action{Type: ActionMulticastEcho}, errors.New("echo peer unavailable"))
-			node.recordMulticastFailure(Action{Type: ActionMulticastReady}, errors.New("ready peer unavailable"))
+			node.recordSendFailure(2, PhaseEcho, BroadcastID{1, 1}, errors.New("echo peer unavailable"))
+			node.recordSendFailure(3, PhaseReady, BroadcastID{1, 1}, errors.New("ready peer unavailable"))
 		})
 	}
 	wg.Wait()
@@ -47,6 +47,9 @@ func TestMulticastFailureLogging(t *testing.T) {
 		!strings.Contains(got, "ready peer unavailable") ||
 		!strings.Contains(got, "multicast failures: ECHO=100 READY=100") {
 		t.Fatalf("unexpected failure logs:\n%s", got)
+	}
+	if first := node.FirstSendFailure(); first == nil || first.Phase != PhaseEcho && first.Phase != PhaseReady {
+		t.Fatalf("first send failure = %+v", first)
 	}
 }
 
@@ -72,6 +75,7 @@ func localNodes(t *testing.T, count, f int, localOpts ...gorums.LocalServerOptio
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(nodes[i].Stop) // runs before the servers stop
 	}
 	return nodes, systems, deliveries
 }
@@ -220,19 +224,23 @@ func TestGorumsDeliversWithUnavailablePeer(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			sent := make(chan error, 1)
-			go func() { sent <- nodes[0].Broadcast(sequence, []byte("survivors")) }()
+			// Broadcast does not wait for any peer. The failed send to node 4
+			// is reported separately and does not invalidate the run.
+			if err := nodes[0].Broadcast(sequence, []byte("survivors")); err != nil {
+				t.Fatal(err)
+			}
 			for i, ch := range deliveries[:3] {
 				awaitDelivery(t, ch, BroadcastID{1, sequence}, "survivors")
 				t.Logf("node %d delivered with node 4 unavailable", i+1)
 			}
-			select {
-			case err := <-sent:
-				if !errors.Is(err, gorums.ErrSendFailure) {
-					t.Fatalf("got %v, want a reported send failure for the unavailable peer", err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("all survivors delivered, but Broadcast is still waiting for node 4")
+			if !waitFor(t, 5*time.Second, func() bool { return nodes[0].SendFailures(PhasePropose) != 0 }) {
+				t.Fatal("no PROPOSE send failure reported for the unavailable peer")
+			}
+			if first := nodes[0].FirstSendFailure(); first == nil || first.Peer != 4 {
+				t.Fatalf("first send failure = %+v, want peer 4", first)
+			}
+			if err := nodes[0].CapacityError(); err != nil {
+				t.Fatalf("send failure tripped the capacity latch: %v", err)
 			}
 		})
 	}
@@ -331,45 +339,24 @@ func TestGorumsDeliversEmptyValue(t *testing.T) {
 	awaitDelivery(t, deliveries[0], BroadcastID{1, 1}, "")
 }
 
-func TestGorumsFailedReadyMulticastStillDelivers(t *testing.T) {
+// A READY that cannot be sent yet must not delay or suppress the delivery it
+// accompanies. Neither server is serving, so node 1's send to node 2 waits.
+func TestGorumsUnsentReadyStillDelivers(t *testing.T) {
 	nodes, _, deliveries := localNodes(t, 2, 0)
 	node := nodes[0]
 	id := BroadcastID{Origin: 2, Sequence: 1}
 	value := []byte("hello")
-	actions, err := node.machine.Handle(2, PhaseReady, id, value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(actions) != 2 || actions[0].Type != ActionMulticastReady || actions[1].Type != ActionDeliver {
-		t.Fatalf("expected READY and delivery actions, got %+v", actions)
-	}
-
-	// Cancel after the transition has enabled delivery, forcing the outbound
-	// READY to fail without needing a network timeout or a mock transport.
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	node.ctx = ctx
-	if err := brbv1.Ready(node.config.Context(ctx), phaseMessage(id, value)).Send(); err == nil {
-		t.Fatal("expected multicast to fail with a cancelled context")
-	}
-	node.performActions(actions)
-	if got := node.readyFailures.Load(); got != 1 {
-		t.Fatalf("READY failure count = %d, want 1", got)
-	}
-	if got := node.Traffic(PhaseReady); got.Calls != 1 || got.RemoteMessages != 1 || got.LocalMessages != 1 {
-		t.Fatalf("failed READY attempt counted as %+v, want one call to two recipients", got)
-	}
-	node.performActions([]Action{{Type: ActionMulticastEcho, ID: id, Value: value}})
-	if got := node.echoFailures.Load(); got != 1 {
-		t.Fatalf("ECHO failure count = %d, want 1", got)
-	}
+	node.handleFrom(2, PhaseReady, phaseMessage(id, value))
 	select {
 	case delivery := <-deliveries[0]:
-		if delivery.ID != id || string(delivery.Value) != string(value) {
+		if delivery.ID != id || string(delivery.Value) != string(value) || delivery.At.IsZero() {
 			t.Fatalf("unexpected delivery: %+v", delivery)
 		}
-	default:
-		t.Fatal("failed READY multicast suppressed local delivery")
+	case <-time.After(5 * time.Second):
+		t.Fatal("unsent READY delayed local delivery")
+	}
+	if got := node.Traffic(PhaseReady); got.Calls != 1 || got.RemoteMessages != 1 || got.LocalMessages != 1 {
+		t.Fatalf("READY counted as %+v, want one call to two recipients", got)
 	}
 
 	// The delivered instance must still ignore a duplicate READY.

@@ -144,6 +144,7 @@ func logDiagnostics(selfID uint32, replica *brb.Replica, origin *originTiming) {
 			selfID, p.name, t.Started, t.Succeeded, t.Failed, t.Cancelled, t.Outstanding, t.Total.Nanoseconds(),
 			t.Max.Nanoseconds(), t.Over[0], t.Over[1], t.Over[2], t.OldestOutstanding.Nanoseconds())
 	}
+	logQueues(selfID, replica)
 	count, w := replica.WindowViolations()
 	benchkit.Printf("brb bench: node %d diag window violations=%d\n", selfID, count)
 	if w == nil {
@@ -159,6 +160,39 @@ func logDiagnostics(selfID uint32, replica *brb.Replica, origin *originTiming) {
 		selfID, w.Origin, phaseName(w.Phase), w.Sender, w.Sequence, w.Prefix, w.Open, w.NextAllocated, w.LaterDelivered,
 		w.HighestDelivered, w.Lowest, w.LowestAllocated, w.Started, w.EchoSent, w.ReadySent, proposed(w),
 		joinVotes(w.Echoes), joinVotes(w.Readies), payloads)
+}
+
+// logQueues prints the dispatch queue limits and high-water marks, the local
+// delivery queue, failed sends and, for an invalid run, the first capacity
+// failure. Call it after the replica has stopped.
+func logQueues(selfID uint32, replica *brb.Replica) {
+	self := replica.SelfQueue()
+	peers := replica.PeerQueues()
+	var peerMax brb.QueueSnapshot
+	if len(peers) != 0 {
+		peerMax = peers[0].Queue
+	}
+	benchkit.Printf("brb bench: node %d diag queue-limits peer_max_entries=%d peer_max_bytes=%d self_max_entries=%d self_max_bytes=%d\n",
+		selfID, peerMax.MaxEntries, peerMax.MaxBytes, self.Queue.MaxEntries, self.Queue.MaxBytes)
+	for _, p := range peers {
+		q := p.Queue
+		benchkit.Printf("brb bench: node %d diag peer-queue peer=%d high_entries=%d high_bytes=%d queued=%d in_flight=%d "+
+			"discarded_at_stop=%d discarded_bytes=%d\n",
+			selfID, p.Peer, q.HighWaterEntries, q.HighWaterBytes, q.QueuedEntries, q.InFlightEntries,
+			p.DiscardedAtStopEntries, p.DiscardedAtStopBytes)
+	}
+	benchkit.Printf("brb bench: node %d diag self-queue high_entries=%d high_bytes=%d queued=%d in_flight=%d max_callback_lag_ns=%d\n",
+		selfID, self.Queue.HighWaterEntries, self.Queue.HighWaterBytes, self.Queue.QueuedEntries, self.Queue.InFlightEntries,
+		self.MaxCallbackLag.Nanoseconds())
+	benchkit.Printf("brb bench: node %d diag send-failures propose=%d echo=%d ready=%d qecho=%d\n", selfID,
+		replica.SendFailures(brb.PhasePropose), replica.SendFailures(brb.PhaseEcho),
+		replica.SendFailures(brb.PhaseReady), replica.SendFailures(brb.PhaseQEcho))
+	if c := replica.CapacityStatus(); c != nil {
+		benchkit.Printf("brb bench: node %d diag capacity peer=%d phase=%s origin=%d sequence=%d msg_bytes=%d queued=%d in_flight=%d "+
+			"queued_bytes=%d in_flight_bytes=%d max_entries=%d max_bytes=%d\n",
+			selfID, c.Peer, phaseName(c.Phase), c.ID.Origin, c.ID.Sequence, c.MsgBytes, c.Queue.QueuedEntries,
+			c.Queue.InFlightEntries, c.Queue.QueuedBytes, c.Queue.InFlightBytes, c.Queue.MaxEntries, c.Queue.MaxBytes)
+	}
 }
 
 func phaseName(p brb.Phase) string {

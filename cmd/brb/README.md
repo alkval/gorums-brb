@@ -195,16 +195,20 @@ allows 30 seconds plus one second per replica. Completion allows 10 seconds plus
 100 ms per replica, followed by a one-second drain. These are outside measurement.
 
 If startup fails, check addresses, ports and that every member is running.
-Any replica that observes a sequence-window violation rejects its benchmark
-result and writes no report. Investigate gaps or lag and discard that run,
+Any replica that observes a sequence-window violation, or whose bounded
+outbound or delivery queue fills (a capacity failure), rejects its benchmark
+result and writes no report. A capacity failure means an outgoing link could
+not keep up with the offered load; it is expected under sustained overload,
+such as an unpaced `-rate 0` run on a slow link. Investigate gaps or lag and discard that run,
 including reports collected from other replicas.
 A faulty replica acts under its own authenticated identity. Failed BRB sends to
 correct peers are not repaired. See the root README for the receive-window
 assumptions.
 
-Each replica logs the first ECHO and READY multicast failure with error details.
+Each replica logs the first failed send of each phase with error details.
 Further failures are counted, with totals printed at normal shutdown. Each count
-is one failed multicast call, even if several recipients were unavailable.
+is one failed send to one peer. `initial-send-failures` in the report label
+counts failed PROPOSE sends.
 These totals are separate from origin completions: a broadcast can still
 deliver despite a failed send to a faulty replica. Other errors, including
 receive-window violations, are still logged normally. Abruptly killed processes
@@ -220,16 +224,15 @@ brb bench: node 3 traffic phase=echo calls=1203 remote_msgs=7218 remote_bytes=..
 ```
 
 `calls` counts multicast calls. Messages and bytes count each recipient
-separately. Remote messages go to other replicas, and local messages are sends
-to the replica itself, which the pinned Gorums runtime serves in-process.
-These are attempted protobuf-message bytes, not measured wire bytes. Gorums
-envelopes, gRPC and HTTP/2 framing, TCP/IP headers and retransmissions are
-excluded. Failed attempts are counted even if nothing was transmitted.
+separately. Remote messages are queued for other replicas, and local messages are the
+copies the replica handles itself. These are queued protobuf-message bytes,
+not measured wire bytes. Gorums envelopes, gRPC and HTTP/2 framing, TCP/IP
+headers and retransmissions are excluded. Messages that failed, or were still
+queued at shutdown and discarded, are counted even if nothing was transmitted.
 
-Counting starts when the replica is created and stops at a cutoff taken after
-the run context is cancelled and the server has stopped. A handler that was
-still running at shutdown may attempt a send after that, but it is not counted,
-so the logged totals are final. They cover the whole run, including the final
+Counting starts when the replica is created and stops when the replica is
+stopped, after the run context is cancelled and the server has stopped.
+Messages handled after that are not counted, so the logged totals are final. They cover the whole run, including the final
 drain.
 
 The comparison metric is attempted protocol-message bytes per origin
@@ -256,9 +259,10 @@ The replica's delivery throughput in deliveries per second is
 which opens when its measurement starts, lasts the configured duration and is
 not trimmed, so it is not the same interval as the origin reports' duration.
 
-Both counts are a snapshot taken when the line is printed, after the server
-stops. A delivery still in a handler at that point may be missing from either
-count, so they are lower bounds. In a complete fault-free trial `total` is at
+Deliveries count at the time of the transition that delivered them, not when
+the replica's delivery callback ran. Both counts are taken after the replica
+has stopped and handed over every queued delivery. Messages still in transit
+at that point are never handled, so the counts are lower bounds. In a complete fault-free trial `total` is at
 most the sum of all reports' untrimmed `TotalOps`, and a smaller `total` is not
 proof that a broadcast was lost.
 
@@ -278,6 +282,11 @@ protocol, thresholds, window and sends are unchanged.
 ```text
 brb bench: node 3 diag origin started=N returned=N failed=0 outstanding=0 before_delivery=N after_delivery=N undelivered=0 after_p50_ns=N after_p99_ns=N after_max_ns=N after_over10ms=N after_over100ms=N after_over1s=N
 brb bench: node 3 diag send phase=echo started=N succeeded=N failed=0 cancelled=N outstanding=0 total_ns=N max_ns=N over10ms=N over100ms=N over1s=N oldest_outstanding_ns=0
+brb bench: node 3 diag queue-limits peer_max_entries=N peer_max_bytes=N self_max_entries=N self_max_bytes=N
+brb bench: node 3 diag peer-queue peer=1 high_entries=N high_bytes=N queued=0 in_flight=0 discarded_at_stop=N discarded_bytes=N
+brb bench: node 3 diag self-queue high_entries=N high_bytes=N queued=0 in_flight=0 max_callback_lag_ns=N
+brb bench: node 3 diag send-failures propose=0 echo=0 ready=0 qecho=0
+brb bench: node 3 diag capacity peer=N phase=echo origin=N sequence=N msg_bytes=N queued=N in_flight=N queued_bytes=N in_flight_bytes=N max_entries=N max_bytes=N
 brb bench: node 3 diag window violations=N
 brb bench: node 3 diag window first origin=N phase=echo sender=N sequence=N prefix=N open=N next_allocated=false later_delivered=N highest_delivered=N lowest=N lowest_allocated=false started=false echo_sent=false ready_sent=false proposed=not-retained echoes=none readies=none payloads=not-retained
 ```
@@ -285,14 +294,25 @@ brb bench: node 3 diag window first origin=N phase=echo sender=N sequence=N pref
 - `diag origin` compares, for each origin broadcast, when `Broadcast` returned
   with when the broadcast was delivered locally. `after_delivery` counts
   returns after delivery, with the distribution of that delay; time spent there
-  lowers throughput without raising the recorded latency. `undelivered` counts
+  lowers throughput without raising the recorded latency. Since `Broadcast`
+  returns once PROPOSE is queued, returns after delivery should be rare.
+  `undelivered` counts
   broadcasts the worker saw no delivery for; `outstanding` calls had not
   returned at shutdown.
-- `diag send` covers every Gorums `Send` of one phase: successful, failed during
+- `diag send` covers every per-peer Gorums `Send` of one phase, excluding the
+  time a message waited in its peer's queue: successful, failed during
   the run, and cancelled (a failure after the run context ended or reporting
   cancellation). Durations cover completed calls; `outstanding` calls were
   still waiting at shutdown, so their durations are censored and
   `oldest_outstanding_ns` is the age of the longest one.
+- `diag queue-limits` gives the configured queue bounds, for provenance.
+  `diag peer-queue` gives each outbound queue's high-water mark in messages
+  and bytes (queued plus the message being sent), what was still there at
+  shutdown, and how many unsent messages were discarded when the replica
+  stopped. `diag self-queue` describes the local delivery queue, with the
+  longest delay from a delivery's transition to its callback. `diag
+  send-failures` counts failed sends per phase. `diag capacity` appears only
+  after a capacity failure and describes the first queue that was full.
 - `diag window` counts messages rejected for being outside the receive window.
   The `first` line is a snapshot taken when the first one was rejected: the
   origin's delivered prefix, its open instances, whether `prefix+1` exists, how
@@ -317,8 +337,10 @@ brb bench: node 3 diag sample t_ms=N propose_out=N echo_out=N ready_out=N propos
 - `t_ms` is the actual time since the window start, so late or missed samples
   show as gaps. Each line's fields are read one after another, not as one
   atomic snapshot.
-- `*_out` and `*_oldest_ms` are the outstanding `Send` calls per phase and the
-  age of the oldest one, as in `diag send`.
+- `*_out` and `*_oldest_ms` are the outstanding per-peer `Send` calls per
+  phase and the age of the oldest one, as in `diag send`. With one sender per
+  peer, `*_out` summed over phases is at most n-1; queued messages appear in
+  the `diag peer-queue` lines instead.
 - `completions` counts operations at the point the benchmark records a
   success, so the final sample equals the report's total operations on a
   successful run. `deliveries` counts this replica's local deliveries from
