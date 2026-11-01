@@ -256,6 +256,7 @@ func TestOptimisticGorumsDelivery(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(nodes[i].Stop)
 	}
 	// Verify the adapter actually selects smaller recipient sets. A multicast
 	// to everyone could still deliver correctly while defeating the optimisation.

@@ -103,6 +103,30 @@ func TestDeliveryTrackerWakesOwnBroadcast(t *testing.T) {
 	}
 }
 
+// Deliveries count at their transition time, even when the replica's callback
+// runs after the window has closed, and wake their broadcast with that time.
+func TestDeliveryTrackerUsesTransitionTime(t *testing.T) {
+	base := time.Now()
+	clock := base
+	tracker := newTestTracker(func() time.Time { return clock })
+	_, end := tracker.open(time.Second)
+	own := make(chan time.Time, 1)
+	tracker.waiters[1] = own
+	at := end.Add(-time.Millisecond)
+	clock = end.Add(time.Minute) // the callback runs long after the window
+	tracker.delivered(brb.Delivery{ID: brb.BroadcastID{Origin: 1, Sequence: 1}, At: at})
+	if in, total := tracker.counts(); in != 1 || total != 1 {
+		t.Fatalf("counts = %d in window, %d total; want 1, 1", in, total)
+	}
+	if got := <-own; !got.Equal(at) {
+		t.Fatalf("waiter got %v, want the transition time %v", got, at)
+	}
+	tracker.delivered(brb.Delivery{ID: brb.BroadcastID{Origin: 2, Sequence: 1}, At: base.Add(-time.Millisecond)})
+	if in, total := tracker.counts(); in != 1 || total != 2 {
+		t.Fatalf("delivery before the window counted in it: %d, %d", in, total)
+	}
+}
+
 // Opening the window while deliveries run classifies each delivery by the
 // clock reading it took under the tracker's lock: those before the window's
 // start were recorded before it was opened, and all later ones are inside it.

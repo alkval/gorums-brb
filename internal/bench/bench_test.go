@@ -242,6 +242,75 @@ func TestWindowViolationPreventsReport(t *testing.T) {
 	}
 }
 
+// A replica whose outbound queue fills writes no report and prints the first
+// capacity failure. Node 1's queues hold one message, so the ECHO caused by
+// its first PROPOSE normally cannot be queued; a send that completes first
+// only moves the failure to a later message,
+// possibly a relay for another origin.
+func TestCapacityFailurePreventsReport(t *testing.T) {
+	peers := addresses(t, 4)
+	listener, err := net.Listen("tcp", peers[3])
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := gorums.NewServer(gorums.WithPeers(4, gorums.WithNodeList(peers),
+		gorums.WithGRPCDialOptions(grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(grpc.WaitForReady(true)))))
+	t.Cleanup(peer.Stop)
+	brbv1.RegisterBrachaServer(peer, quietBenchmarkPeer{started: make(chan uint32, 100)})
+	benchkit.RegisterControlServer(peer, benchkit.NewControl())
+	go func() { _ = peer.Serve(listener) }()
+	path := filepath.Join(t.TempDir(), "result.binpb")
+	logged := captureStderr(t, func() {
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+		defer cancel()
+		results := make([]chan error, 3)
+		for i, addr := range peers[:3] {
+			output := filepath.Join(t.TempDir(), "result.binpb")
+			if i == 0 {
+				output = path
+			}
+			opts, err := ParseOptions([]string{"-plaintext", "-self=" + addr, "-remotes=" + strings.Join(peers, ","),
+				"-f=1", "-output=" + output, "-time=500ms", "-rate=20"}, io.Discard)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if i == 0 {
+				opts.replicaOpts = []brb.Option{brb.WithPeerQueueLimits(1, brb.DefaultQueueBytes)}
+			}
+			results[i] = make(chan error, 1)
+			go func() { results[i] <- Run(ctx, opts) }()
+		}
+		select {
+		case err := <-results[0]:
+			if !errors.Is(err, brb.ErrQueueCapacityExceeded) {
+				t.Fatalf("capacity failure returned %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal("benchmark did not finish")
+		}
+		// Without node 1 the others cannot reach a quorum; stop them.
+		cancel()
+		for i := 1; i < 3; i++ {
+			<-results[i]
+		}
+	})
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid run wrote a report: %v", err)
+	}
+	for _, want := range []string{
+		"brb bench: node 1 diag origin started=",
+		"brb bench: node 1 diag queue-limits peer_max_entries=1 ",
+		"brb bench: node 1 diag capacity peer=",
+		" max_entries=1 max_bytes=",
+		" latched_unix_ns=",
+	} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("missing %q in:\n%s", want, logged)
+		}
+	}
+}
+
 func TestFixedRateStopsAtMeasurementDeadline(t *testing.T) {
 	peer := addresses(t, 1)[0]
 	path := filepath.Join(t.TempDir(), "result.binpb")

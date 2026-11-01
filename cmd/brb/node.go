@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -109,7 +110,11 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 		}
 		server.Stop()
 		if node != nil {
+			node.Stop()
 			node.LogMulticastFailures()
+			if err == nil {
+				err = invalidRun(node)
+			}
 		}
 		if ctx.Err() != nil {
 			logger.Printf("node %d stopping", opts.id)
@@ -156,6 +161,9 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 			}
 			logBroadcast(logger, opts.id, "submitted", brb.BroadcastID{Origin: brb.ProcessID(opts.id), Sequence: sequence}, value)
 		}
+		if err := invalidRun(node); err != nil {
+			return err
+		}
 	}
 	select {
 	case <-ctx.Done():
@@ -163,6 +171,15 @@ func run(ctx context.Context, opts options, logger *log.Logger) (err error) {
 	case err := <-serveErr:
 		return fmt.Errorf("brb: server stopped unexpectedly: %w", err)
 	}
+}
+
+// invalidRun reports a latched queue capacity failure or a receive-window
+// violation, either of which makes the replica's run invalid.
+func invalidRun(node *brb.Replica) error {
+	if err := cmp.Or(node.CapacityError(), node.WindowError()); err != nil {
+		return fmt.Errorf("brb: invalid run: %w", err)
+	}
+	return nil
 }
 
 // Keep larger workloads from printing their entire payload on every delivery.

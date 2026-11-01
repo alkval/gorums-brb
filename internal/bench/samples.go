@@ -56,6 +56,13 @@ type sendSource interface {
 	SendTiming(brb.Phase) brb.SendTiming
 }
 
+// queueSource is the replica's dispatch queues. A sendSource that also
+// implements it gets a queue sample after each diagnostic sample.
+type queueSource interface {
+	PeerQueues() []brb.PeerQueueSnapshot
+	SelfQueue() brb.SelfQueueSnapshot
+}
+
 // sampler prints one diagnostic sample per interval from the start of the
 // measurement window until stop, and applies the resource guard. Measurement
 // only, apart from the guard, which cancels the run. Each line's fields are
@@ -170,6 +177,7 @@ func (s *sampler) sample() {
 	if err != nil {
 		stopped := s.limits.enabled() && s.trip("metrics_unavailable")
 		s.printf("brb bench: node %d diag sample t_ms=%d error=%q\n", s.selfID, t.Milliseconds(), err.Error())
+		s.sampleQueues(t)
 		if stopped {
 			s.printStop("metrics_unavailable", t, resources{})
 		}
@@ -184,9 +192,36 @@ func (s *sampler) sample() {
 		s.selfID, t.Milliseconds(), p.Outstanding, e.Outstanding, r.Outstanding,
 		p.OldestOutstanding.Milliseconds(), e.OldestOutstanding.Milliseconds(), r.OldestOutstanding.Milliseconds(),
 		s.completions.Load(), s.deliveries(), res.goroutines, res.heapObjects, res.heapStacks)
+	s.sampleQueues(t)
 	if stopped {
 		s.printStop(reason, t, res)
 	}
+}
+
+// sampleQueues prints the largest outbound peer queue by active entries
+// (queued plus in flight), with its bytes and peer ID, the sum over all peer
+// queues, and the local delivery queue. Without peer queues the peer fields
+// are zero.
+func (s *sampler) sampleQueues(t time.Duration) {
+	q, ok := s.sends.(queueSource)
+	if !ok {
+		return
+	}
+	var maxID brb.ProcessID
+	var maxEntries, totalEntries int
+	var maxBytes int64
+	for _, p := range q.PeerQueues() {
+		active := p.Queue.QueuedEntries + p.Queue.InFlightEntries
+		totalEntries += active
+		if maxID == 0 || active > maxEntries {
+			maxID, maxEntries, maxBytes = p.Peer, active, p.Queue.QueuedBytes+p.Queue.InFlightBytes
+		}
+	}
+	self := q.SelfQueue().Queue
+	s.printf("brb bench: node %d diag queue-sample t_ms=%d peer_max_id=%d peer_max_entries=%d peer_max_bytes=%d "+
+		"peer_total_entries=%d self_entries=%d self_bytes=%d\n",
+		s.selfID, t.Milliseconds(), maxID, maxEntries, maxBytes, totalEntries,
+		self.QueuedEntries+self.InFlightEntries, self.QueuedBytes+self.InFlightBytes)
 }
 
 // exceeded returns the limit res exceeds, or "".

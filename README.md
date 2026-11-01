@@ -25,8 +25,11 @@ on PATH.
 
 Membership is fixed, with IDs 1 through n and n > 3f. The default fault bound is
 `(n-1)/3`, with an explicit `-f` override. A broadcast is identified by its origin
-and sequence. PROPOSE, ECHO and READY are one-way multicasts, including self.
-Delivery is once per instance and need not follow sequence order.
+and sequence. PROPOSE, ECHO and READY go to all members, including self. Each
+replica handles its own copy directly and sends to every peer through a
+bounded per-peer queue, so a slow peer delays only its own messages. A full
+queue fails the run explicitly instead of blocking the replica or dropping
+messages. Delivery is once per instance and need not follow sequence order.
 See the [protocol and system model](docs/Protocol.md) for the threshold reasoning,
 properties and implementation limits.
 
