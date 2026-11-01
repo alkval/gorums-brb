@@ -107,6 +107,23 @@ func TestSamplerQueueLine(t *testing.T) {
 	}
 }
 
+// An error sample is also followed by its queue sample.
+func TestSamplerQueueLineAfterErrorSample(t *testing.T) {
+	start := time.Unix(100, 0)
+	sends := fakeQueues{fakeSends: fakeSends{}, peers: []brb.PeerQueueSnapshot{{Peer: 2}}}
+	s := newSampler(1, time.Second, resourceLimits{}, sends, func() uint64 { return 0 }, func() {})
+	s.read = func() (resources, error) { return resources{}, errors.New("no metrics") }
+	s.now = func() time.Time { return start.Add(2 * time.Second) }
+	s.start = start
+	got := captureStderr(t, s.sample)
+	want := "brb bench: node 1 diag sample t_ms=2000 error=\"no metrics\"\n" +
+		"brb bench: node 1 diag queue-sample t_ms=2000 peer_max_id=2 peer_max_entries=0 peer_max_bytes=0 " +
+		"peer_total_entries=0 self_entries=0 self_bytes=0\n"
+	if got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
 func TestSamplerInitialFinalAndJoin(t *testing.T) {
 	s, _ := testSampler(t, 10*time.Millisecond, resourceLimits{}, func() resources { return resources{goroutines: 1} })
 	output := captureStderr(t, func() {

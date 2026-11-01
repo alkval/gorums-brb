@@ -303,6 +303,7 @@ func TestCapacityFailurePreventsReport(t *testing.T) {
 		"brb bench: node 1 diag queue-limits peer_max_entries=1 ",
 		"brb bench: node 1 diag capacity peer=",
 		" max_entries=1 max_bytes=",
+		" latched_unix_ns=",
 	} {
 		if !strings.Contains(logged, want) {
 			t.Fatalf("missing %q in:\n%s", want, logged)

@@ -236,13 +236,15 @@ type SelfQueueSnapshot struct {
 }
 
 // CapacitySnapshot records the first queue that could not accept required
-// work. Peer is this replica's own ID for the local delivery queue.
+// work. Peer is this replica's own ID for the local delivery queue. At is when
+// the latch tripped, on this host's clock.
 type CapacitySnapshot struct {
 	Peer     ProcessID
 	Phase    Phase
 	ID       BroadcastID
 	MsgBytes int64
 	Queue    QueueSnapshot
+	At       time.Time
 }
 
 // SendFailureSnapshot records the first failed send to a peer while the run

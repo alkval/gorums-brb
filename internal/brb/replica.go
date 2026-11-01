@@ -104,6 +104,7 @@ type Replica struct {
 	capacityErr      error             // written before capacityExceeded is set
 	capacity         *CapacitySnapshot // written before capacityExceeded is set
 	capacityLatched  chan struct{}
+	capacityLog      sync.Once
 
 	sendFailures [PhaseQEcho + 1]atomic.Uint64
 	failureMu    sync.Mutex
@@ -230,6 +231,7 @@ func (n *Replica) Broadcast(sequence uint64, value []byte) error {
 		return n.admissionError(err)
 	}
 	msg := n.message(id, value)
+	defer n.logCapacity() // after dispatchMu is released
 	n.dispatchMu.Lock()
 	defer n.dispatchMu.Unlock()
 	if n.stopped {
@@ -343,19 +345,29 @@ func (n *Replica) runSelf() {
 }
 
 // tripCapacityLatchLocked records the first capacity failure, stops dispatch
-// and makes the replica ignore further messages. The caller holds dispatchMu.
+// and makes the replica ignore further messages. The caller holds dispatchMu
+// and logs the failure with logCapacity after releasing it.
 func (n *Replica) tripCapacityLatchLocked(peer ProcessID, phase Phase, id BroadcastID, charge int64, c credits) {
 	if n.capacityExceeded.Load() {
 		return
 	}
-	n.capacity = &CapacitySnapshot{Peer: peer, Phase: phase, ID: id, MsgBytes: charge, Queue: queueSnapshot(c)}
+	n.capacity = &CapacitySnapshot{Peer: peer, Phase: phase, ID: id, MsgBytes: charge, Queue: queueSnapshot(c),
+		At: n.opts.now()}
 	n.capacityErr = fmt.Errorf("%w: peer %d phase %s id %d/%d (entries %d+%d of %d, bytes %d+%d of %d, message %d B)",
 		ErrQueueCapacityExceeded, peer, phaseLabel(phase), id.Origin, id.Sequence,
 		c.queuedEntries, c.inFlightEntries, c.maxEntries, c.queuedBytes, c.inFlightBytes, c.maxBytes, charge)
 	n.capacityExceeded.Store(true)
 	close(n.capacityLatched)
-	log.Printf("brb node %d: %v", n.self, n.capacityErr)
 	n.dispatchCancel()
+}
+
+// logCapacity logs a latched capacity failure once. Callers run it after
+// releasing dispatchMu, so a blocked log writer cannot hold up Stop or delay
+// the cancellation.
+func (n *Replica) logCapacity() {
+	if n.capacityExceeded.Load() {
+		n.capacityLog.Do(func() { log.Printf("brb node %d: %v", n.self, n.capacityErr) })
+	}
 }
 
 // CapacityError reports a latched queue capacity failure. The replica ignores
@@ -653,6 +665,7 @@ func (n *Replica) handleFrom(sender ProcessID, phase Phase, msg *brbv1.PhaseMess
 		log.Printf("brb node %d: rejected malformed %v message", n.self, phase)
 		return
 	}
+	defer n.logCapacity() // after dispatchMu is released
 	n.dispatchMu.Lock()
 	defer n.dispatchMu.Unlock()
 	if n.stopped || n.capacityExceeded.Load() || n.ctx.Err() != nil {

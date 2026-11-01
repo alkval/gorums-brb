@@ -189,9 +189,10 @@ func logQueues(selfID uint32, replica *brb.Replica) {
 		replica.SendFailures(brb.PhaseReady), replica.SendFailures(brb.PhaseQEcho))
 	if c := replica.CapacityStatus(); c != nil {
 		benchkit.Printf("brb bench: node %d diag capacity peer=%d phase=%s origin=%d sequence=%d msg_bytes=%d queued=%d in_flight=%d "+
-			"queued_bytes=%d in_flight_bytes=%d max_entries=%d max_bytes=%d\n",
+			"queued_bytes=%d in_flight_bytes=%d max_entries=%d max_bytes=%d latched_unix_ns=%d\n",
 			selfID, c.Peer, phaseName(c.Phase), c.ID.Origin, c.ID.Sequence, c.MsgBytes, c.Queue.QueuedEntries,
-			c.Queue.InFlightEntries, c.Queue.QueuedBytes, c.Queue.InFlightBytes, c.Queue.MaxEntries, c.Queue.MaxBytes)
+			c.Queue.InFlightEntries, c.Queue.QueuedBytes, c.Queue.InFlightBytes, c.Queue.MaxEntries, c.Queue.MaxBytes,
+			c.At.UnixNano())
 	}
 }
 

@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -233,6 +235,79 @@ func TestContract1BSequenceConsumedOnProposeCapacityFailure(t *testing.T) {
 	case <-node.CapacityLatched():
 	default:
 		t.Fatal("capacity latch channel not closed")
+	}
+}
+
+// blockingWriter holds every write until released.
+type blockingWriter struct {
+	entered chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	buf     bytes.Buffer
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	select {
+	case w.entered <- struct{}{}:
+	default:
+	}
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+// The latch cancels dispatch and releases dispatchMu before the failure is
+// logged, so a blocked log writer delays neither the cancellation nor Stop.
+func TestContract1BCapacityLatchDoesNotWaitForLogger(t *testing.T) {
+	held := newGate()
+	defer held.release()
+	nodes, _ := testCluster(t, 2, 0, NewReplica, nil, func(ProcessID) []Option {
+		return []Option{WithPeerQueueLimits(1, DefaultQueueBytes), withBeforePeerSend(func(ProcessID, Phase, BroadcastID) { held.wait() })}
+	})
+	node := nodes[0]
+	w := &blockingWriter{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	previous := log.Writer()
+	log.SetOutput(w)
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(w.release) }) }
+	t.Cleanup(func() { unblock(); log.SetOutput(previous) })
+	result := make(chan error, 1)
+	go func() { result <- node.Broadcast(1, []byte("v")) }()
+	select {
+	case <-node.CapacityLatched():
+	case <-time.After(5 * time.Second):
+		t.Fatal("latch did not trip")
+	}
+	select {
+	case <-node.dispatchCtx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("dispatch not cancelled while the logger is blocked")
+	}
+	select {
+	case <-w.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("capacity failure was never logged")
+	}
+	held.release()
+	stopped := make(chan struct{})
+	go func() { node.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop waited for the blocked logger")
+	}
+	unblock()
+	if err := <-result; !errors.Is(err, ErrQueueCapacityExceeded) {
+		t.Fatalf("Broadcast: %v", err)
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if got := strings.Count(w.buf.String(), "outbound peer queue capacity exceeded"); got != 1 {
+		t.Fatalf("logged %d capacity failures:\n%s", got, w.buf.String())
+	}
+	if s := node.CapacityStatus(); s == nil || s.At.IsZero() {
+		t.Fatalf("capacity status without a latch time: %+v", s)
 	}
 }
 

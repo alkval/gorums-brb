@@ -286,7 +286,7 @@ brb bench: node 3 diag queue-limits peer_max_entries=N peer_max_bytes=N self_max
 brb bench: node 3 diag peer-queue peer=1 high_entries=N high_bytes=N queued=0 in_flight=0 discarded_at_stop=N discarded_bytes=N
 brb bench: node 3 diag self-queue high_entries=N high_bytes=N queued=0 in_flight=0 max_callback_lag_ns=N
 brb bench: node 3 diag send-failures propose=0 echo=0 ready=0 qecho=0
-brb bench: node 3 diag capacity peer=N phase=echo origin=N sequence=N msg_bytes=N queued=N in_flight=N queued_bytes=N in_flight_bytes=N max_entries=N max_bytes=N
+brb bench: node 3 diag capacity peer=N phase=echo origin=N sequence=N msg_bytes=N queued=N in_flight=N queued_bytes=N in_flight_bytes=N max_entries=N max_bytes=N latched_unix_ns=N
 brb bench: node 3 diag window violations=N
 brb bench: node 3 diag window first origin=N phase=echo sender=N sequence=N prefix=N open=N next_allocated=false later_delivered=N highest_delivered=N lowest=N lowest_allocated=false started=false echo_sent=false ready_sent=false proposed=not-retained echoes=none readies=none payloads=not-retained
 ```
@@ -312,7 +312,11 @@ brb bench: node 3 diag window first origin=N phase=echo sender=N sequence=N pref
   stopped. `diag self-queue` describes the local delivery queue, with the
   longest delay from a delivery's transition to its callback. `diag
   send-failures` counts failed sends per phase. `diag capacity` appears only
-  after a capacity failure and describes the first queue that was full.
+  after a capacity failure and describes the first queue that was full; `peer`
+  is the replica's own ID when its local delivery queue was full.
+  `latched_unix_ns` is when the latch tripped, on that host's clock. The
+  line itself is printed at shutdown, so the order of these lines across
+  replicas says nothing about which failed first.
 - `diag window` counts messages rejected for being outside the receive window.
   The `first` line is a snapshot taken when the first one was rejected: the
   origin's delivered prefix, its open instances, whether `prefix+1` exists, how
