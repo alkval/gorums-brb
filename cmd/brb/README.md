@@ -332,6 +332,7 @@ from the start of the measurement window, plus a final one at shutdown:
 
 ```text
 brb bench: node 3 diag sample t_ms=N propose_out=N echo_out=N ready_out=N propose_oldest_ms=N echo_oldest_ms=N ready_oldest_ms=N completions=N deliveries=N goroutines=N heap_objects=N heap_stacks=N
+brb bench: node 3 diag queue-sample t_ms=N peer_max_id=N peer_max_entries=N peer_max_bytes=N peer_total_entries=N self_entries=N self_bytes=N
 ```
 
 - `t_ms` is the actual time since the window start, so late or missed samples
@@ -341,6 +342,12 @@ brb bench: node 3 diag sample t_ms=N propose_out=N echo_out=N ready_out=N propos
   phase and the age of the oldest one, as in `diag send`. With one sender per
   peer, `*_out` summed over phases is at most n-1; queued messages appear in
   the `diag peer-queue` lines instead.
+- Each sample is followed by a `queue-sample` line with the same `t_ms`. It
+  names the outbound peer queue with the most messages (queued plus the one
+  being sent) and its bytes, the total over all peer queues, and the local
+  delivery queue. A queue that keeps growing across samples indicates a link
+  that cannot keep up with the offered load; one that fills and drains
+  indicates a temporary stall.
 - `completions` counts operations at the point the benchmark records a
   success, so the final sample equals the report's total operations on a
   successful run. `deliveries` counts this replica's local deliveries from

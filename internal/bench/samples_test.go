@@ -69,6 +69,44 @@ func TestSamplerLineFormat(t *testing.T) {
 	}
 }
 
+// fakeQueues adds fixed dispatch queues to fakeSends.
+type fakeQueues struct {
+	fakeSends
+	peers []brb.PeerQueueSnapshot
+	self  brb.SelfQueueSnapshot
+}
+
+func (f fakeQueues) PeerQueues() []brb.PeerQueueSnapshot { return f.peers }
+func (f fakeQueues) SelfQueue() brb.SelfQueueSnapshot    { return f.self }
+
+// The queue sample follows each sample and names the peer queue with the
+// most active entries, queued plus in flight.
+func TestSamplerQueueLine(t *testing.T) {
+	start := time.Unix(100, 0)
+	q := func(queued, inFlight int, bytes int64) brb.QueueSnapshot {
+		return brb.QueueSnapshot{QueuedEntries: queued, InFlightEntries: inFlight, QueuedBytes: bytes, InFlightBytes: 10}
+	}
+	sends := fakeQueues{
+		fakeSends: fakeSends{},
+		peers: []brb.PeerQueueSnapshot{
+			{Peer: 2, Queue: q(3, 1, 300)},
+			{Peer: 3, Queue: q(7, 1, 700)},
+			{Peer: 4, Queue: q(0, 0, 0)},
+		},
+		self: brb.SelfQueueSnapshot{Queue: brb.QueueSnapshot{QueuedEntries: 2, InFlightEntries: 1, QueuedBytes: 80, InFlightBytes: 40}},
+	}
+	s := newSampler(1, time.Second, resourceLimits{}, sends, func() uint64 { return 0 }, func() {})
+	s.read = func() (resources, error) { return resources{}, nil }
+	s.now = func() time.Time { return start.Add(time.Second) }
+	s.start = start
+	got := captureStderr(t, s.sample)
+	want := "brb bench: node 1 diag queue-sample t_ms=1000 peer_max_id=3 peer_max_entries=8 peer_max_bytes=710 " +
+		"peer_total_entries=12 self_entries=3 self_bytes=120\n"
+	if !strings.HasSuffix(got, want) || strings.Count(got, "\n") != 2 {
+		t.Fatalf("queue line:\n got %q\nwant suffix %q", got, want)
+	}
+}
+
 func TestSamplerInitialFinalAndJoin(t *testing.T) {
 	s, _ := testSampler(t, 10*time.Millisecond, resourceLimits{}, func() resources { return resources{goroutines: 1} })
 	output := captureStderr(t, func() {
@@ -216,6 +254,9 @@ func TestSampleCompletionsMatchTotalOps(t *testing.T) {
 	}
 	if strings.Contains(output, "resource-stop") {
 		t.Fatal("unexpected resource stop")
+	}
+	if queues := strings.Count(output, "diag queue-sample "); queues != len(matches) {
+		t.Fatalf("%d queue samples for %d samples", queues, len(matches))
 	}
 }
 
