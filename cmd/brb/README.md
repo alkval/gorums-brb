@@ -180,6 +180,28 @@ remain healthy. Choose one faulty replica with `-fault-node` (default: last ID).
 - `-fault=wrong-echo` echoes a different value under its own ID.
 - `-fault=equivocate` proposes A and B to different replicas for one instance.
 
+`-fault=silent` keeps reading, so it does not model a peer that stays connected
+but stops reading. `-fault=equivocate` injects one instance (the faulty
+replica's sequence 1) and then withholds votes. In that mode every correct
+replica logs whether it delivered that instance and the SHA-256 of the value:
+`watched origin=<id> sequence=1 delivered=<bool> sha256=<hex|none>`. Agreement
+holds if all delivered digests are equal; the instance need not be delivered.
+In the silent, wrong-echo and equivocate modes the faulty replica generates no
+workload, so only n-1 origins are active.
+
+For a fault-free control with the same n-1 active origins, pass
+`-idle-node=<id>` (and `-fail-fast`, which the fault modes enable) to every
+node. That replica runs the protocol correctly but generates no workload and
+writes no report. It cannot be combined with an injected fault.
+
+Every replica logs `diag conflicting-echoes count=<k>`: the accepted ECHO votes
+that introduced a further distinct value in their instance. It is zero in a
+fault-free run. A nonzero count is evidence of conflicting ECHO values, as
+under `-fault=wrong-echo`. It does not identify the faulty sender: after an
+equivocating origin, a correct replica's ECHO can add the second value. Votes
+arriving after an instance delivered are not counted, so the count is a lower
+bound and a positive value is not guaranteed in every faulty run.
+
 Pass these in sweep's `-extra-args`, alongside `-mode=bench`. Keep the injected
 count within f. Faulty replicas produce no measurement file. Inspect survivor
 reports and missing files together. A missing completion signal is recorded,

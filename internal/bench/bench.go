@@ -4,6 +4,8 @@ package bench
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -34,6 +36,7 @@ type Options struct {
 	failFast   bool
 	fault      string
 	faultNode  uint
+	idleNode   uint // a correct replica that generates no workload; 0: none
 	optimistic bool
 	digest     bool // READY carries a SHA-256 digest instead of the value
 	tlsDir     string
@@ -48,6 +51,8 @@ type Options struct {
 	makeNet func(uint32, []string, time.Duration) (*netCollector, error)
 	// replicaOpts adds replica options in tests, such as queue limits; nil in use.
 	replicaOpts []brb.Option
+	// idleStarted is called in tests when the idle replica's wait begins; nil in use.
+	idleStarted func(*gorums.Server)
 }
 
 func (o Options) auth() string {
@@ -89,6 +94,7 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	fs.BoolVar(&opts.failFast, "fail-fast", false, "report unavailable-peer sends promptly for fault diagnostics; correct peers must already be connected")
 	fs.StringVar(&opts.fault, "fault", "none", "faulty replica behavior: none, silent, equivocate, wrong-echo")
 	fs.UintVar(&opts.faultNode, "fault-node", 0, "faulty replica ID (default: last replica)")
+	fs.UintVar(&opts.idleNode, "idle-node", 0, "replica ID that runs the protocol correctly but generates no workload and writes no report, as a fault-free control with n-1 origins (0: none)")
 	fs.StringVar(&opts.tlsDir, "tls-dir", "", "this replica's credentials (ca.pem, node.pem, node-key.pem); required unless -plaintext")
 	fs.BoolVar(&opts.plaintext, "plaintext", false, "run without TLS and with unverified sender IDs, only for a labelled transport comparison")
 	fs.DurationVar(&opts.diagInterval, "diag-interval", 0, "print a diagnostic sample at this interval during the measurement (0: off)")
@@ -143,6 +149,12 @@ func ParseOptions(args []string, output io.Writer) (Options, error) {
 	default:
 		return opts, errors.New("brb: unknown fault behavior")
 	}
+	if opts.idleNode > uint(len(opts.Remotes)) {
+		return opts, errors.New("brb: idle node is outside membership")
+	}
+	if opts.idleNode != 0 && (opts.fault != "none" || opts.FaultKillAfter > 0) {
+		return opts, errors.New("brb: -idle-node is a fault-free control and cannot be combined with an injected fault")
+	}
 	if opts.diagInterval < 0 || (opts.limits.enabled() && opts.diagInterval == 0) {
 		return opts, errors.New("brb bench: -diag-interval must be positive when a resource guard is set")
 	}
@@ -175,6 +187,10 @@ func Run(parent context.Context, opts Options) error {
 	ctx, cancel := context.WithTimeout(parent, opts.Duration+startupTimeout(len(opts.Remotes))+completionTimeout(len(opts.Remotes))+5*time.Second)
 	defer cancel()
 	tracker := &deliveryTracker{self: opts.selfID, now: time.Now, waiters: make(map[uint64]chan time.Time)}
+	if opts.fault == "equivocate" {
+		// The faulty replica injects one instance with two values.
+		tracker.watch = &brb.BroadcastID{Origin: brb.ProcessID(opts.faultNode), Sequence: 1}
+	}
 	origin := &originTiming{}
 	node, err := startNode(ctx, opts, tracker.delivered)
 	if err != nil {
@@ -241,7 +257,18 @@ func Run(parent context.Context, opts Options) error {
 	if uint(opts.selfID) == opts.faultNode && opts.fault != "none" {
 		return runFault(ctx, node, opts)
 	}
-	results, err := measure(ctx, cancel, node, opts, tracker, origin, samples)
+	var results []*benchkit.Result
+	if idle := uint(opts.selfID) == opts.idleNode; idle {
+		// Open the window so deliveries and samples are recorded as elsewhere.
+		start, _ := tracker.open(opts.Duration)
+		samples.begin(start)
+		if opts.idleStarted != nil {
+			opts.idleStarted(node.server)
+		}
+		err = idleWait(ctx, opts.Duration, node.serveErr)
+	} else {
+		results, err = measure(ctx, cancel, node, opts, tracker, origin, samples)
+	}
 	if err != nil {
 		return failed(err)
 	}
@@ -286,9 +313,17 @@ func Run(parent context.Context, opts Options) error {
 	if opts.fault != "none" || opts.FaultKillAfter > 0 {
 		label += fmt.Sprintf(" fault=%s fault-node=%d kill-after=%s", opts.fault, opts.faultNode, opts.FaultKillAfter)
 	}
+	if opts.idleNode != 0 {
+		label += fmt.Sprintf(" idle-node=%d", opts.idleNode)
+	}
 	if failures != 0 || len(missing) != 0 {
 		label += fmt.Sprintf(" initial-send-failures=%d missing-done=%v", failures, missing)
 		benchkit.Printf("brb bench: %s\n", label)
+	}
+	if uint(opts.selfID) == opts.idleNode {
+		// The idle replica measured nothing, so it writes no report.
+		benchkit.Printf("brb bench: node %d idle control: no workload, no report\n", opts.selfID)
+		return nil
 	}
 	return benchkit.WriteLabeledReport(results, label, opts.Output)
 }
@@ -311,6 +346,11 @@ type deliveryTracker struct {
 	// called, and the deliveries from every origin, in total and inside it.
 	start, end      time.Time
 	total, inWindow uint64
+	// watch names one broadcast whose delivered value is recorded, for the
+	// equivocation check; nil otherwise.
+	watch        *brb.BroadcastID
+	watched      bool
+	watchedValue [sha256.Size]byte
 }
 
 // open starts the measurement window of length d at this replica and returns
@@ -345,6 +385,9 @@ func (t *deliveryTracker) delivered(d brb.Delivery) {
 	t.total++
 	if !at.Before(t.start) && at.Before(t.end) {
 		t.inWindow++
+	}
+	if t.watch != nil && d.ID == *t.watch && !t.watched {
+		t.watched, t.watchedValue = true, sha256.Sum256(d.Value)
 	}
 	if uint32(d.ID.Origin) != t.self {
 		return
@@ -535,6 +578,37 @@ func logDeliveries(selfID uint32, tracker *deliveryTracker, window time.Duration
 	inWindow, total := tracker.counts()
 	benchkit.Printf("brb bench: node %d deliveries window_ns=%d in_window=%d total=%d\n",
 		selfID, window.Nanoseconds(), inWindow, total)
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if tracker.watch == nil {
+		return
+	}
+	// Whether this replica delivered the watched broadcast, and which value.
+	digest := "none"
+	if tracker.watched {
+		digest = hex.EncodeToString(tracker.watchedValue[:])
+	}
+	benchkit.Printf("brb bench: node %d watched origin=%d sequence=%d delivered=%t sha256=%s\n",
+		selfID, tracker.watch.Origin, tracker.watch.Sequence, tracker.watched, digest)
+}
+
+// idleWait is the idle control replica's workload period. Like a measuring
+// worker, it fails if the server stops before the period ends: the replica
+// would no longer be taking part.
+func idleWait(ctx context.Context, duration time.Duration, serveErr <-chan error) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-serveErr:
+		if err == nil {
+			return errServerStopped
+		}
+		return fmt.Errorf("%w: %w", errServerStopped, err)
+	}
 }
 
 func waitGrace(ctx context.Context, duration time.Duration) error {

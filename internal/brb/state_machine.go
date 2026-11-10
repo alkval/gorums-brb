@@ -70,6 +70,8 @@ type StateMachine struct {
 	// Diagnostics: rejected messages and the state at the first rejection.
 	windowViolations uint64
 	firstViolation   *WindowSnapshot
+	// Diagnostics: ECHO votes that added a further distinct value to an instance.
+	conflictingEchoes uint64
 }
 
 type instance struct {
@@ -198,6 +200,7 @@ func (m *StateMachine) handle(from ProcessID, phase Phase, id BroadcastID, value
 		}
 	case PhaseEcho:
 		count := state.echoes.add(from, value)
+		m.noteEcho(&state.echoes, count)
 		if m.optimistic {
 			if !state.qEchoSent && uint64(count) > (uint64(m.n)+uint64(m.f))/2 {
 				state.qEchoSent = true

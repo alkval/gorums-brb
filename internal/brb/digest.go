@@ -59,6 +59,7 @@ func (m *StateMachine) handleDigest(state *instance, from ProcessID, phase Phase
 		digest = digestOf(value)
 		state.storePayload(digest, value)
 		count := state.echoes.add(from, digest)
+		m.noteEcho(&state.echoes, count)
 		if !state.readySent && uint64(count) > (uint64(m.n)+uint64(m.f))/2 {
 			state.readySent = true
 			actions = append(actions, readyDigestAction(id, digest))

@@ -183,6 +183,27 @@ func (m *StateMachine) recordWindowViolation(from ProcessID, phase Phase, id Bro
 	m.firstViolation = s
 }
 
+// noteEcho counts an accepted ECHO vote that is the first for its value in an
+// instance that already holds votes for another value. The caller holds m.mu.
+func (m *StateMachine) noteEcho(v *votes, count int) {
+	if count == 1 && len(v.counts) > 1 {
+		m.conflictingEchoes++
+	}
+}
+
+// ConflictingEchoes reports how many accepted ECHO votes introduced a further
+// distinct value in their instance: one per extra value. With a correct origin
+// and correct senders it stays zero. A nonzero count is evidence of conflicting
+// ECHO values, not of which sender is faulty: after an origin equivocates, a
+// correct sender's ECHO can add the second value. Votes arriving after an
+// instance delivered are not counted, so it is a lower bound and can be zero
+// in a run with a faulty sender.
+func (m *StateMachine) ConflictingEchoes() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.conflictingEchoes
+}
+
 // WindowViolations returns the number of messages rejected for being outside
 // the receive window and, if there was one, a copy of the first snapshot.
 func (m *StateMachine) WindowViolations() (uint64, *WindowSnapshot) {
