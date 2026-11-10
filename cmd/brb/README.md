@@ -221,8 +221,10 @@ Any replica that observes a sequence-window violation, or whose bounded
 outbound or delivery queue fills (a capacity failure), rejects its benchmark
 result and writes no report. A capacity failure means an outgoing link could
 not keep up with the offered load; it is expected under sustained overload,
-such as an unpaced `-rate 0` run on a slow link. Investigate gaps or lag and discard that run,
-including reports collected from other replicas.
+such as an unpaced `-rate 0` run on a slow link. It can also follow from a peer that processes
+messages too slowly: after startup a replica reads from each peer only as fast as it processes, so
+the peer's queue toward it fills (see inbound backpressure in `docs/Protocol.md`). Investigate gaps
+or lag and discard that run, including reports collected from other replicas.
 A faulty replica acts under its own authenticated identity. Failed BRB sends to
 correct peers are not repaired. See the root README for the receive-window
 assumptions.

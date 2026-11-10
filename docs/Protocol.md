@@ -33,7 +33,7 @@ initiate PROPOSE. Every phase is sent to all members, including self.
 Each correct process sends at most one ECHO and one READY per instance. Votes
 are counted once per sender and phase. Different values never share a count.
 State updates are protected by the state-machine mutex. Networking and delivery
-callbacks run after the lock and Gorums dispatch ordering have been released.
+callbacks run in separate workers, outside the replica's transition lock.
 
 The intended properties are validity (a correct origin's value is delivered by
 all correct processes), no duplication, integrity (a delivered value attributed
@@ -82,6 +82,18 @@ that falls behind further. Under sustained overload of any outgoing link,
 including unpaced benchmark load, a run is therefore expected to fail with
 this error rather than complete unevenly. Evaluations use declared offered
 loads (`-rate`), with a capacity failure marking the overload boundary.
+
+Inbound messages are bounded by the transport. A BRB handler keeps Gorums'
+per-stream dispatcher until its processing returns, so each established
+inbound stream runs one handler at a time, in arrival order. Slow processing
+therefore fills Gorums' bounded receive queue for that stream (4096 requests
+by default) and then backpressures the sender, whose bounded outbound queue
+may reach its capacity limit. A replica that stays behind can in this way
+cause a capacity failure at a correct peer. The bound is on queued requests,
+not on total process memory. In the benchmark there is one exception: a BRB
+request that arrives before the replica has finished its startup checks
+releases its stream, so that startup probes can pass, and waits; such early
+requests can then run concurrently.
 Local deliveries reach the application one at a time in delivery order,
 carrying the time of the transition that delivered them.
 

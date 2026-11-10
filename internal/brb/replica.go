@@ -645,9 +645,14 @@ func phaseLabel(p Phase) string {
 }
 
 func (n *Replica) handle(ctx gorums.ServerContext, phase Phase, msg *brbv1.PhaseMessage) {
-	// Release Gorums before waiting for dispatchMu, so that other requests on
-	// this stream are not blocked behind the transition.
-	ctx.Release()
+	// The handler does not release Gorums' dispatcher. Each established
+	// inbound stream then runs one handler at a time, in arrival order, and
+	// Gorums bounds the requests queued behind it. A replica that falls behind
+	// stops reading from its peers, whose bounded queues toward it may then
+	// reach capacity. This is safe only while a transition never waits for an
+	// incoming message: it must only update state and insert into bounded
+	// queues, as transitionLocked does. An interceptor that releases before
+	// this handler runs removes the bound for that request.
 	n.handleFrom(ProcessID(ctx.SenderID()), phase, msg)
 }
 

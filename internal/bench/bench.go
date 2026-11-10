@@ -439,8 +439,9 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 }
 
 // serverInterceptor admits benchmark control calls only from group members and
-// holds BRB messages until this replica has finished its startup checks. The
-// replica itself rejects BRB votes from non-members.
+// holds BRB messages until this replica has finished its startup checks. It
+// releases a stream only for BRB messages that arrive before then. The replica
+// itself rejects BRB votes from non-members.
 func serverInterceptor(ctx context.Context, ready <-chan struct{}, n int) gorums.ServerInterceptor {
 	return func(sc gorums.ServerContext, msg *gorums.Message, next gorums.Handler) (*gorums.Message, error) {
 		method := msg.GetMethod()
@@ -450,12 +451,21 @@ func serverInterceptor(ctx context.Context, ready <-chan struct{}, n int) gorums
 			}
 		}
 		if strings.HasPrefix(method, "brb.v1.Bracha.") {
-			// Startup probes must still run while early BRB messages wait.
-			sc.Release()
 			select {
 			case <-ready:
-			case <-ctx.Done():
-				return nil, ctx.Err()
+				// Keep Gorums' dispatcher: on this stream, requests that
+				// arrive after startup run one at a time and Gorums bounds
+				// those queued behind the running one.
+			default:
+				// Startup probes must still run while early BRB messages wait.
+				// Requests released here are not bounded by the dispatcher
+				// and may run concurrently once the replica is ready.
+				sc.Release()
+				select {
+				case <-ready:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
 			}
 		}
 		return next(sc, msg)
