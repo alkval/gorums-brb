@@ -241,3 +241,39 @@ func TestWindowSnapshotAdvancedPrefix(t *testing.T) {
 		t.Fatalf("got %d %+v, want 1 %+v", count, s, want)
 	}
 }
+
+// ConflictingEchoes counts one per extra distinct ECHO value in an instance.
+// Matching votes, repeated votes and other instances do not add to it.
+func TestConflictingEchoesCount(t *testing.T) {
+	for name, newMachine := range map[string]func(int, int) (*StateMachine, error){
+		"bracha": NewStateMachine, "ready-digest": NewReadyDigestStateMachine,
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, err := newMachine(4, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			echo := func(from ProcessID, seq uint64, value string) {
+				t.Helper()
+				if _, err := m.Handle(from, PhaseEcho, BroadcastID{Origin: 1, Sequence: seq}, []byte(value)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			echo(1, 1, "v")
+			echo(2, 1, "v")
+			if got := m.ConflictingEchoes(); got != 0 {
+				t.Fatalf("matching votes counted as conflicting: %d", got)
+			}
+			echo(4, 1, "w") // a second value
+			echo(4, 1, "x") // repeated sender: ignored
+			if got := m.ConflictingEchoes(); got != 1 {
+				t.Fatalf("after one wrong ECHO: %d, want 1", got)
+			}
+			echo(4, 2, "w") // first value of another instance
+			echo(1, 2, "v") // the correct value arrives second there
+			if got := m.ConflictingEchoes(); got != 2 {
+				t.Fatalf("after two instances: %d, want 2", got)
+			}
+		})
+	}
+}

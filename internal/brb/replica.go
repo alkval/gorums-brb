@@ -454,6 +454,15 @@ func (n *Replica) WindowViolations() (uint64, *WindowSnapshot) {
 	return n.machine.WindowViolations()
 }
 
+// ConflictingEchoes reports the accepted ECHO votes that introduced a further
+// distinct value in their instance. It is evidence of conflicting ECHO values,
+// not of which sender is faulty: after an origin equivocates, a correct
+// sender's ECHO can be the one that adds the second value. It is a lower
+// bound, since votes arriving after an instance delivered are not counted.
+func (n *Replica) ConflictingEchoes() uint64 {
+	return n.machine.ConflictingEchoes()
+}
+
 // recordSend counts one attempted multicast. Computing the size once per call
 // keeps the cost independent of the number of recipients.
 func (n *Replica) recordSend(phase Phase, recipients gorums.Config, msg *brbv1.PhaseMessage) {

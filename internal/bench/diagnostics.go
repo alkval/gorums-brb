@@ -147,6 +147,7 @@ func logDiagnostics(selfID uint32, replica *brb.Replica, origin *originTiming) {
 	logQueues(selfID, replica)
 	count, w := replica.WindowViolations()
 	benchkit.Printf("brb bench: node %d diag window violations=%d\n", selfID, count)
+	benchkit.Printf("brb bench: node %d diag conflicting-echoes count=%d\n", selfID, replica.ConflictingEchoes())
 	if w == nil {
 		return
 	}
