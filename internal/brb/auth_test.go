@@ -80,6 +80,7 @@ func tlsNodes(t *testing.T, creds string, n, f int, certOf func(uint32) uint32, 
 		if nodes[i], err = NewReplica(ctx, sys, f, func(d Delivery) { deliveries[i] <- d }); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(nodes[i].Stop) // runs before the servers stop
 	}
 	return nodes, systems, deliveries
 }
@@ -150,7 +151,8 @@ func TestTLSReplicasDeliverUnderVerifiedIdentities(t *testing.T) {
 		awaitDelivery(t, ch, BroadcastID{1, 1}, "hello")
 	}
 	// Every vote arrived under a configured, verified replica ID, and node 1
-	// heard from enough distinct replicas to deliver.
+	// heard from enough distinct replicas to deliver. Its own votes are
+	// handled directly, not through Gorums, so it needs 2f remote senders.
 	for server := uint32(1); server <= 4; server++ {
 		for sender := range log.seen(server) {
 			if sender < 1 || sender > 4 {
@@ -158,8 +160,8 @@ func TestTLSReplicasDeliverUnderVerifiedIdentities(t *testing.T) {
 			}
 		}
 	}
-	if got := len(log.seen(1)); got < 3 {
-		t.Fatalf("node 1 saw votes from %d replicas, want at least 2f+1 = 3", got)
+	if got := len(log.seen(1)); got < 2 || log.seen(1)[1] {
+		t.Fatalf("node 1 saw Gorums votes from %v, want at least 2f = 2 other replicas", log.seen(1))
 	}
 }
 

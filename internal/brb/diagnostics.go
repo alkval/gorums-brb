@@ -195,3 +195,63 @@ func (m *StateMachine) WindowViolations() (uint64, *WindowSnapshot) {
 	s.Echoes, s.Readies, s.Payloads = slices.Clone(s.Echoes), slices.Clone(s.Readies), slices.Clone(s.Payloads)
 	return m.windowViolations, &s
 }
+
+// QueueSnapshot is the logical occupancy of one bounded dispatch queue.
+// Entries and bytes count queued items plus the item a worker has taken but
+// not finished (in flight). Bytes are marshalled message sizes, or value
+// sizes for deliveries, plus a fixed per-entry charge. High-water marks cover
+// the replica's lifetime.
+type QueueSnapshot struct {
+	QueuedEntries, InFlightEntries int
+	QueuedBytes, InFlightBytes     int64
+	MaxEntries                     int
+	MaxBytes                       int64
+	HighWaterEntries               int
+	HighWaterBytes                 int64
+}
+
+func queueSnapshot(c credits) QueueSnapshot {
+	return QueueSnapshot{
+		QueuedEntries: c.queuedEntries, InFlightEntries: c.inFlightEntries,
+		QueuedBytes: c.queuedBytes, InFlightBytes: c.inFlightBytes,
+		MaxEntries: c.maxEntries, MaxBytes: c.maxBytes,
+		HighWaterEntries: c.highEntries, HighWaterBytes: c.highBytes,
+	}
+}
+
+// PeerQueueSnapshot describes the outbound queue to one remote peer. Items
+// still queued when the replica stopped were discarded and are counted here.
+type PeerQueueSnapshot struct {
+	Peer                   ProcessID
+	Queue                  QueueSnapshot
+	DiscardedAtStopEntries int
+	DiscardedAtStopBytes   int64
+}
+
+// SelfQueueSnapshot describes the local delivery queue. MaxCallbackLag is the
+// longest time from a delivery's transition to the start of its callback.
+type SelfQueueSnapshot struct {
+	Queue          QueueSnapshot
+	MaxCallbackLag time.Duration
+}
+
+// CapacitySnapshot records the first queue that could not accept required
+// work. Peer is this replica's own ID for the local delivery queue. At is when
+// the latch tripped, on this host's clock.
+type CapacitySnapshot struct {
+	Peer     ProcessID
+	Phase    Phase
+	ID       BroadcastID
+	MsgBytes int64
+	Queue    QueueSnapshot
+	At       time.Time
+}
+
+// SendFailureSnapshot records the first failed send to a peer while the run
+// was active.
+type SendFailureSnapshot struct {
+	Peer  ProcessID
+	Phase Phase
+	ID    BroadcastID
+	Err   string
+}

@@ -487,6 +487,7 @@ func TestGorumsReadyDigestDelivery(t *testing.T) {
 		if nodes[i], err = NewReadyDigestReplica(ctx, sys, 1, func(d Delivery) { deliveries[i] <- d }); err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(nodes[i].Stop)
 	}
 	serve(t, systems)
 	value := bytes.Repeat([]byte("x"), 4096)

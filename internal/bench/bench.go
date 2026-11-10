@@ -46,6 +46,8 @@ type Options struct {
 	readResources func() (resources, error)
 	// makeNet replaces the platform collector in tests; nil in use.
 	makeNet func(uint32, []string, time.Duration) (*netCollector, error)
+	// replicaOpts adds replica options in tests, such as queue limits; nil in use.
+	replicaOpts []brb.Option
 }
 
 func (o Options) auth() string {
@@ -186,19 +188,36 @@ func Run(parent context.Context, opts Options) error {
 	defer func() {
 		cancel()
 		node.server.Stop()
+		node.replica.Stop()
 		samples.stop()
 		samples.logNetStatus()
 		node.replica.LogMulticastFailures()
 		logDiagnostics(opts.selfID, node.replica, origin)
 	}()
-	// A resource stop cancels the run; report it as the cause of the failure.
+	// A resource stop or a capacity failure cancels the run; report it as the
+	// cause of the failure.
 	failed := func(err error) error {
+		// Close the transition barrier first, so a capacity failure latched
+		// by a transition still in progress is seen below.
+		cancel()
+		node.server.Stop()
+		node.replica.Stop()
 		samples.stop()
 		if reason := samples.stopReason(); reason != "" {
 			return fmt.Errorf("brb bench: resource stop (%s), no report: %w", reason, err)
 		}
+		if capErr := node.replica.CapacityError(); capErr != nil {
+			return fmt.Errorf("brb bench: invalid run: %w (%w)", capErr, err)
+		}
 		return err
 	}
+	go func() {
+		select {
+		case <-node.replica.CapacityLatched():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	if opts.diagNet {
 		if (!netDiagSupported && opts.makeNet == nil) || opts.diagInterval <= 0 {
 			return netStatusError("requires Linux and a positive -diag-interval")
@@ -222,7 +241,7 @@ func Run(parent context.Context, opts Options) error {
 	if uint(opts.selfID) == opts.faultNode && opts.fault != "none" {
 		return runFault(ctx, node, opts)
 	}
-	results, failures, err := measure(ctx, cancel, node, opts, tracker, origin, samples)
+	results, err := measure(ctx, cancel, node, opts, tracker, origin, samples)
 	if err != nil {
 		return failed(err)
 	}
@@ -233,18 +252,25 @@ func Run(parent context.Context, opts Options) error {
 	if err := waitGrace(ctx, time.Second); err != nil {
 		return failed(err)
 	}
-	// Stop accepting traffic before checking the run's window status. The
+	// Stop accepting traffic before checking the run's status. Replica.Stop
+	// waits for any transition in progress, so a capacity or window failure
+	// latched before it is seen here, and it runs the queued deliveries. The
 	// final sample is taken, and the guard's latch read, before any report
 	// decision.
 	cancel()
 	node.server.Stop()
+	node.replica.Stop()
 	samples.stop()
 	if reason := samples.stopReason(); reason != "" {
 		return fmt.Errorf("brb bench: resource stop (%s), no report", reason)
 	}
+	if err := node.replica.CapacityError(); err != nil {
+		return fmt.Errorf("brb bench: invalid run: %w", err)
+	}
 	if err := node.replica.WindowError(); err != nil {
 		return fmt.Errorf("brb bench: invalid run: %w", err)
 	}
+	failures := node.replica.SendFailures(brb.PhasePropose)
 	logTraffic(opts.selfID, node.replica)
 	logDeliveries(opts.selfID, tracker, opts.Duration)
 	label := fmt.Sprintf("node %d f=%d auth=%s", opts.selfID, opts.f, opts.auth())
@@ -306,12 +332,18 @@ func (t *deliveryTracker) counts() (inWindow, total uint64) {
 	return t.inWindow, t.total
 }
 
+// delivered records d at its transition time, so time spent in the replica's
+// delivery queue affects neither the window nor the latency. Deliveries
+// without a time are recorded at the current time.
 func (t *deliveryTracker) delivered(d brb.Delivery) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	now := t.now()
+	at := d.At
+	if at.IsZero() {
+		at = t.now()
+	}
 	t.total++
-	if !now.Before(t.start) && now.Before(t.end) {
+	if !at.Before(t.start) && at.Before(t.end) {
 		t.inWindow++
 	}
 	if uint32(d.ID.Origin) != t.self {
@@ -319,7 +351,7 @@ func (t *deliveryTracker) delivered(d brb.Delivery) {
 	}
 	if ch := t.waiters[d.ID.Sequence]; ch != nil {
 		delete(t.waiters, d.ID.Sequence)
-		ch <- now
+		ch <- at
 	}
 }
 
@@ -348,7 +380,7 @@ func startNode(ctx context.Context, opts Options, deliver func(brb.Delivery)) (*
 	case opts.digest:
 		newReplica = brb.NewReadyDigestReplica
 	}
-	replica, err := newReplica(ctx, server, opts.f, deliver)
+	replica, err := newReplica(ctx, server, opts.f, deliver, opts.replicaOpts...)
 	if err != nil {
 		_ = listener.Close()
 		server.Stop()
@@ -415,9 +447,8 @@ func awaitPeers(ctx context.Context, node *benchmarkNode, opts Options) error {
 }
 
 func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode, opts Options, tracker *deliveryTracker,
-	origin *originTiming, samples *sampler) ([]*benchkit.Result, uint64, error) {
+	origin *originTiming, samples *sampler) ([]*benchkit.Result, error) {
 	var sequence atomic.Uint64
-	var sendFailures atomic.Uint64
 	value := bytes.Repeat([]byte{'x'}, opts.Payload)
 	settings := opts.Options()
 	settings.NumNodes, settings.Remote = len(opts.Remotes), true
@@ -445,13 +476,10 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 					defer func() { tracker.mu.Lock(); delete(tracker.waiters, id); tracker.mu.Unlock() }()
 					startedAt := time.Now()
 					origin.start()
+					// Broadcast returns once PROPOSE is queued. Failed sends to
+					// individual peers are counted by the replica instead.
 					err := node.replica.Broadcast(id, value)
 					returnedAt := time.Now()
-					if errors.Is(err, gorums.ErrSendFailure) {
-						// A failed send to one peer does not establish whether the
-						// origin can deliver. settleBroadcast waits for the delivery.
-						sendFailures.Add(1)
-					}
 					deliveredAt, err := settleBroadcast(ctx, origin, ch, node.serveErr, returnedAt, err)
 					if err != nil {
 						if errors.Is(err, errServerStopped) {
@@ -470,23 +498,22 @@ func measure(ctx context.Context, cancel context.CancelFunc, node *benchmarkNode
 		},
 	}})
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	if ctx.Err() != nil || results[0].GetFailedOps() != 0 || results[0].GetTotalOps() == 0 {
 		if err := ctx.Err(); err != nil {
-			return nil, 0, fmt.Errorf("brb bench: incomplete run: %w", err)
+			return nil, fmt.Errorf("brb bench: incomplete run: %w", err)
 		}
-		return nil, 0, fmt.Errorf("brb bench: incomplete run: failed=%d, completed=%d", results[0].GetFailedOps(), results[0].GetTotalOps())
+		return nil, fmt.Errorf("brb bench: incomplete run: failed=%d, completed=%d", results[0].GetFailedOps(), results[0].GetTotalOps())
 	}
-	return results, sendFailures.Load(), nil
+	return results, nil
 }
 
-// logTraffic records attempted protocol sends once per phase. Sweep keeps each
+// logTraffic records queued protocol sends once per phase. Sweep keeps each
 // node's stderr in the per-run log, so byte accounting needs no extra result
-// file. Call it after cancelling the run and stopping the server. The totals
+// file. Call it after stopping the replica, which fixes the totals. They
 // cover the whole run, including the final drain, up to that cutoff.
 func logTraffic(selfID uint32, replica *brb.Replica) {
-	replica.FinalizeTraffic()
 	for _, p := range []struct {
 		name  string
 		phase brb.Phase
@@ -499,10 +526,11 @@ func logTraffic(selfID uint32, replica *brb.Replica) {
 
 // logDeliveries records how many broadcasts this replica delivered, from every
 // origin: inside its measurement window, for replica-side throughput, and in
-// total. Both are a snapshot taken when this is called, after the server has
-// stopped. Handlers still running at that point may deliver later, so both
-// counts are lower bounds and the total can fall short of the group's
-// completed origin broadcasts.
+// total. Both are taken after the replica has stopped and run every queued
+// delivery, so they cover all deliveries up to that cutoff. Deliveries count
+// at their transition time. The total can still fall short of the group's
+// completed origin broadcasts, since messages in flight at the cutoff are
+// never handled.
 func logDeliveries(selfID uint32, tracker *deliveryTracker, window time.Duration) {
 	inWindow, total := tracker.counts()
 	benchkit.Printf("brb bench: node %d deliveries window_ns=%d in_window=%d total=%d\n",
